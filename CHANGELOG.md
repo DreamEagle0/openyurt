@@ -1,5 +1,170 @@
 # CHANGELOG
 
+## v0.6.0
+
+### What's New
+
+**Support YurtAppDaemon to deploy workload to different NodePools**
+
+A YurtAppDaemon ensures that all (or some) NodePools run a copy of a Deployment or StatefulSet. As nodepools are added to the cluster,
+Deployment or StatefulSet are added to them. As nodepools are removed from the cluster, those Deployments or StatefulSet are garbage collected.
+The behavior of YurtAppDaemon is similar to that of DaemonSet, except that YurtAppDaemon creates workloads from a node pool.
+More information can be found at: ([#422](https://github.com/openyurtio/openyurt/pull/422), [yurt-app-manager](https://github.com/openyurtio/yurt-app-manager), [@kadisi](https://github.com/kadisi))
+
+**Using YurtIngress to unify service across NodePools**
+
+YurtIngress acts as a unified interface for services access request from outside the NodePool, it abstracts and simplifies
+service access logic to users, it also reduces the complexity of NodePool services management. More information can be
+found at: ([#373](https://github.com/openyurtio/openyurt/pull/373), [#645](https://github.com/openyurtio/openyurt/pull/645), [yurt-app-manager](https://github.com/openyurtio/yurt-app-manager), [@zzguang](https://github.com/zzguang), [@gnunu](https://github.com/gnunu), [@LindaYu17](https://github.com/LindaYu17))
+
+**Improve the user experience of OpenYurt**
+
+- OpenYurt Experience Center
+
+New users who want to try out OpenYurt's capabilities do not need to install an OpenYurt cluster from scratch.
+They can apply for a test account on the OpenYurt Experience Center and immediately have an OpenYurt cluster available.
+More information can be found at: ([OpenYurt Experience Center Introduction](https://openyurt.io/zh/docs/next/installation/openyurt-experience-center/overview/), [@luc99hen](https://github.com/luc99hen), [@qclc](https://github.com/qclc), [@Peeknut](https://github.com/Peeknut))
+
+- YurtCluster
+
+This YurtCluster Operator is to translate a vanilla Kubernetes cluster into an OpenYurt cluster, through a simple API (YurtCluster CRD).
+And we recommend that you do the cluster conversion based on the declarative API of YurtCluster Operator. More information can be
+found at: ([#389](https://github.com/openyurtio/openyurt/pull/389), [#518](https://github.com/openyurtio/openyurt/pull/518), [yurtcluster-operator](https://github.com/openyurtio/yurtcluster-operator), [@SataQiu](https://github.com/SataQiu), [@gnunu](https://github.com/gnunu))
+
+- Yurtctl init/join
+
+In order to improve efficiency of creating OpenYurt cluster, a new tool named [sealer](https://github.com/alibaba/sealer) has
+been integrated into `yurtctl init` command. and OpenYurt cluster image(based on Kubernetes v1.19.7 version) has been prepared.
+Users can use `yurtctl init` command to create OpenYurt cluster control-plane, and use `yurtctl join` to add worker nodes(including
+cloud nodes and edge nodes). More information can be found at: ([#704](https://github.com/openyurtio/openyurt/pull/704), [#697](https://github.com/openyurtio/openyurt/pull/697), [@Peeknut](https://github.com/Peeknut), [@rambohe-ch](https://github.com/rambohe-ch), [@adamzhoul](https://github.com/adamzhoul))
+
+**Update docs of OpenYurt**
+
+The docs of OpenYurt installation, core concepts, user manuals, developer manuals etc. have been updated, and all of them are located at [OpenYurt Docs](https://openyurt.io/zh/docs/next/).
+Thanks to all contributors for maintaining docs for OpenYurt. ([@huangyuqi](https://github.com/huangyuqi), [@kadisi](https://github.com/kadisi), [@luc99hen](https://github.com/orgs/openyurtio/people/luc99hen), [@SataQiu](https://github.com/SataQiu), [@mowangdk](https://github.com/orgs/openyurtio/people/mowangdk), [@rambohe-ch](https://github.com/rambohe-ch), [@zyjhtangtang](https://github.com/zyjhtangtang), [@qclc](https://github.com/qclc), [@Peeknut](https://github.com/Peeknut), [@Congrool](https://github.com/Congrool), [@zzguang](https://github.com/zzguang), [@adamzhoul](https://github.com/adamzhoul), [@windydayc](https://github.com/windydayc), [@villanel](https://github.com/villanel))
+
+### Other Notable Changes
+
+- Proposal: enhance cluster networking capabilities ([#637](https://github.com/openyurtio/openyurt/pull/637), [@DrmagicE](https://github.com/DrmagicE), [@BSWANG](https://github.com/BSWANG))
+- add node-servant ([#516](https://github.com/openyurtio/openyurt/pull/516), [adamzhoul](https://github.com/adamzhoul))
+- improve yurt-tunnel-server to automatically update server certificates when service address changed ([#525](https://github.com/openyurtio/openyurt/pull/525), [@YRXING](https://github.com/YRXING))
+- automatically clean dummy interface and iptables rule when yurthub is stopped by k8s ([#530](https://github.com/openyurtio/openyurt/pull/530), [@Congrool](https://github.com/Congrool))
+- enhancement: add openyurt.io/skip-discard annotation verify for discardcloudservice filter ([#524](https://github.com/openyurtio/openyurt/pull/542), [@rambohe-ch](https://github.com/rambohe-ch))
+- inject working_mode ([#552](https://github.com/openyurtio/openyurt/pull/552), [@ngau66](https://github.com/ngau66))
+- Yurtctl revert adds the function of deleting yurt app manager ([#555](https://github.com/openyurtio/openyurt/pull/555), [@yanyhui](https://github.com/yanyhui))
+- Add edge device demo in the README.md ([#553](https://github.com/openyurtio/openyurt/pull/553), [#554](https://github.com/openyurtio/openyurt/pull/554), [@Fei-Guo](https://github.com/Fei-Guo), [@qclc](https://github.com/qclc), [@lwmqwer](https://github.com/lwmqwer))
+- Refactor: separate the creation of informers from tunnel server component ([#585](https://github.com/openyurtio/openyurt/pull/585), [@YRXING](https://github.com/YRXING))
+- add make push for pushing images generated during make release ([#601](https://github.com/openyurtio/openyurt/pull/601), [@gnunu](https://github.com/gnunu))
+- add trafficforward that contains two diversion modes: DNAT and DNS ([#606](https://github.com/openyurtio/openyurt/pull/606), [@JcJinChen](https://github.com/JcJinChen))
+- yurthub verify bootstrap ca on start ([#631](https://github.com/openyurtio/openyurt/pull/631), [@gnunu](https://github.com/gnunu))
+- deprecate kubelet certificate management mode ([#639](https://github.com/openyurtio/openyurt/pull/639), [@qclc](https://github.com/qclc))
+- remove k8s.io/kubernetes dependency from OpenYurt ([#650](https://github.com/openyurtio/openyurt/pull/650), [#664](https://github.com/openyurtio/openyurt/pull/664), [#681](https://github.com/openyurtio/openyurt/pull/681), [#697](https://github.com/openyurtio/openyurt/pull/697), [#704](https://github.com/openyurtio/openyurt/pull/704), [@rambohe-ch](https://github.com/rambohe-ch), [@qclc](https://github.com/qclc), [@Peeknut](https://github.com/Peeknut), [@Rachel-Shao](https://github.com/Rachel-Shao))
+- add unit tests for yurthub data filtering framework ([#670](https://github.com/openyurtio/openyurt/pull/670), [@windydayc](https://github.com/windydayc))
+- enable yurthub to handle upgrade request ([#673](https://github.com/openyurtio/openyurt/pull/673), [@Congrool](https://github.com/Congrool))
+- Yurtctl: add precheck for reducing convert failure ([#675](https://github.com/openyurtio/openyurt/pull/675), [@Peeknut](https://github.com/Peeknut))
+- ingress: add nodepool endpoints filtering for nginx ingress controller ([#696](https://github.com/openyurtio/openyurt/pull/696), [@zzguang](https://github.com/zzguang))
+
+### Bug Fixes
+
+- fix some bugs when local up openyurt  ([#517](https://github.com/openyurtio/openyurt/pull/517), [@Congrool](https://github.com/Congrool))
+- reject delete pod request by yurthub when cloud-edge network disconnected ([#593](https://github.com/openyurtio/openyurt/pull/593), [@rambohe-ch](https://github.com/rambohe-ch))
+- service topology filter can not work when hub agent work on cloud mode ([#607](https://github.com/openyurtio/openyurt/pull/607), [@rambohe-ch](https://github.com/rambohe-ch))
+- fix transport race conditions in yurthub ([#683](https://github.com/openyurtio/openyurt/pull/683), [@rambohe-ch](https://github.com/rambohe-ch), [@DrmagicE](https://github.com/DrmagicE))
+
+---
+
+## v0.5.0
+
+### What's New
+
+**Manage EdgeX Foundry system in OpenYurt in a cloud-native, non-intrusive way**
+
+- yurt-edgex-manager
+
+  Yurt-edgex-manager enable OpenYurt to be able to manage the EdgeX lifecycle. Each EdgeX CR (Custom Resource) stands for an EdgeX instance.
+Users can deploy/update/delete EdgeX in OpenYurt cluster by operate the EdgeX CR directly. ([yurt-edgex-manager](https://github.com/openyurtio/yurt-edgex-manager), [@yixingjia](https://github.com/yixingjia), [@lwmqwer](https://github.com/lwmqwer))
+
+- yurt-device-controller
+
+  Yurt-device-controller aims to provider device management functionalities to OpenYurt cluster by integrating with edge computing/IOT platforms, like EdgeX in a cloud native way.
+It will automatically synchronize the device status to device CR (custom resource) in the cloud and any update to the device will pass through to the edge side seamlessly. More information can be found at: ([yurt-device-controller](https://github.com/openyurtio/yurt-device-controller), [@charleszheng44](https://github.com/charleszheng44), [@qclc](https://github.com/qclc), [@Peeknut](https://github.com/Peeknut), [@rambohe-ch](https://github.com/rambohe-ch), [@yixingjia](https://github.com/yixingjia))
+
+**Yurt-tunnel support more flexible settings for forwarding requests from cloud to edge**
+
+- Support forward https request from cloud to edge for components(like prometheus) on the cloud nodes can access the https service(like node-exporter) on the edge node.
+Please refer to the details: ([#442](https://github.com/openyurtio/openyurt/pull/442), [@rambohe-ch](https://github.com/rambohe-ch), [@Fei-Guo](https://github.com/Fei-Guo), [@DrmagicE](https://github.com/DrmagicE), [@SataQiu](https://github.com/SataQiu))
+
+- support forward cloud requests to edge node's localhost endpoint for components(like prometheus) on cloud nodes collect edge components(like yurthub) metrics(http://127.0.0.1:10267).
+  Please refer to the details: ([#443](https://github.com/openyurtio/openyurt/pull/443), [@rambohe-ch](https://github.com/rambohe-ch), [@Fei-Guo](https://github.com/Fei-Guo))
+
+### Other Notable Changes
+- Proposal: YurtAppDaemon ([#422](https://github.com/openyurtio/openyurt/pull/422), [@kadisi](https://github.com/kadisi), [@zzguang](https://github.com/zzguang), [@gnunu](https://github.com/gnunu), [@Fei-Guo](https://github.com/Fei-Guo), [@rambohe-ch](https://github.com/rambohe-ch))
+- update yurtcluster operator proposal ([#429](https://github.com/openyurtio/openyurt/pull/429), [@SataQiu](https://github.com/SataQiu))
+- yurthub use original bearer token to forward requests for inclusterconfig pods ([#437](https://github.com/openyurtio/openyurt/pull/437), [@rambohe-ch](https://github.com/rambohe-ch))
+- yurthub support working on cloud nodes ([#483](https://github.com/openyurtio/openyurt/pull/483) and [#495](https://github.com/openyurtio/openyurt/pull/495), [@DrmagicE](https://github.com/DrmagicE))
+- support discard cloud service(like LoadBalancer service) on edge side ([#440](https://github.com/openyurtio/openyurt/pull/440), [@rambohe-ch](https://github.com/rambohe-ch), [@Fei-Guo](https://github.com/Fei-Guo))
+- improve list/watch node pool resource in serviceTopology filter ([#454](https://github.com/openyurtio/openyurt/pull/454), [@neo502721](https://github.com/neo502721))
+- add configmap to configure user agents for specify response cache. ([#466](https://github.com/openyurtio/openyurt/pull/466),  [@rambohe-ch](https://github.com/rambohe-ch))
+- improve the usage of certificates ([#475](https://github.com/openyurtio/openyurt/pull/475), [@ke-jobs](https://github.com/ke-jobs))
+- improve unit tests for yurt-tunnel. ([#470](https://github.com/openyurtio/openyurt/pull/470), [@YRXING](https://github.com/YRXING))
+- stop renew node lease when kubelet's heartbeat is stopped ([#482](https://github.com/openyurtio/openyurt/pull/482), [@SataQiu](https://github.com/SataQiu))
+- add check-license-header script to github action ([#487](https://github.com/openyurtio/openyurt/pull/487), [@lonelyCZ](https://github.com/lonelyCZ))
+- Add tunnel server address for converting ([#494](https://github.com/openyurtio/openyurt/pull/494), [adamzhoul](https://github.com/adamzhoul))
+
+### Bug Fixes
+
+- fix incomplete data copy of resource filter  ([#452](https://github.com/openyurtio/openyurt/pull/452), [@SataQiu](https://github.com/SataQiu))
+- remove excess chan that will block the program ([#446](https://github.com/openyurtio/openyurt/pull/446), [@zc2638](https://github.com/zc2638))
+- use buffered channel for signal notifications ([#471](https://github.com/openyurtio/openyurt/pull/471), [@SataQiu](https://github.com/SataQiu))
+- add create to yurt-tunnel-server ClusterRole ([#500](https://github.com/openyurtio/openyurt/pull/500), [adamzhoul](https://github.com/adamzhoul))
+
+---
+
+## v0.4.1
+
+### What's New
+
+**Join or Reset node in one step**
+
+In order to enable users to use OpenYurt clusters quickly and reduce the cost of users learning OpenYurt, yurtctl has provided the subcommands `convert` and `revert`, to implement the conversion between OpenYurt cluster and Kubernetes cluster. However, It still has some shortcomings:
+- No support for new nodes to join the cluster directly;
+- Users are required to pre-built a kubernetes cluster, and then do conversion, which has a relatively high learning cost for beginners.
+
+So, we need to add subcommands `init`, `join`, `reset` for yurtctl. and `join` and `reset` subcommands can be used in v0.4.1, and `init` subcommand will comes in next version.
+Please refer to the [proposal doc](https://github.com/openyurtio/openyurt/blob/master/docs/proposals/20210607-adding-subcommands-server-join-reset-for-yurtctl.md) and [usage doc](https://github.com/openyurtio/openyurt/blob/master/docs/tutorial/yurtctl.md#join-edge-nodecloud-node-to-openyurt) for details. ([#387](https://github.com/openyurtio/openyurt/pull/387), [#402](https://github.com/openyurtio/openyurt/pull/402), [@zyjhtangtang](https://github.com/zyjhtangtang))
+
+**Support Pods use `InClusterConfig` access kube-apiserver through yurthub**
+
+Many users in OpenYurt community have requested that support InClusterConfig for pods to access kube-apiserver through yurthub on edge nodes. so pods on cloud can move to edge cluster smoothly. so we add the following features.
+-  yurthub supports https serve.
+- env `KUBERNETES_SERVICE_HOST` and `KUBERNETES_SERVICE_PORT` should be the address that yurthub listening, like `169.254.2.1:10261`
+
+Please refer to the issue [#372](https://github.com/openyurtio/openyurt/issues/372) for details. ([#386](https://github.com/openyurtio/openyurt/pull/386), [#394](https://github.com/openyurtio/openyurt/pull/394), [@luckymrwang](https://github.com/luckymrwang), [@rambohe-ch](https://github.com/rambohe-ch))
+
+**Support filter cloud response data on edge side**
+
+In the cloud-edge scenario, In response to requests from edge components (such as kube-proxy) or user pods to the cloud, it is hoped that some customized processing can be performed on the data returned by the cloud, we consider providing a generic data filtering framework in the yurthub component, which can customize the data returned from the cloud without being aware of the edge components and user pods, so as to meet business needs simply and conveniently. And provides two specific filtering handlers.
+
+1. support endpointslice filter for keeping service traffic in-bound of nodePool
+2. support master service mutation for pod use InClusterConfig access kube-apiserver
+
+Please refer to the [Proposal doc](https://github.com/openyurtio/openyurt/blob/master/docs/proposals/20210720-data-filtering-framework.md) for details. ([#388](https://github.com/openyurtio/openyurt/pull/388), [#394](https://github.com/openyurtio/openyurt/pull/394), [@rambohe-ch](https://github.com/rambohe-ch), [@Fei-Guo](https://github.com/Fei-Guo))
+
+### Other Notable Changes
+- Yurtctl modify kube-controllersetting to close the nodelifecycle-controller ([#399](https://github.com/openyurtio/openyurt/pull/399), [@Peeknut](https://github.com/Peeknut))
+- Proposal: EdgeX integration with OpenYurt ([#357](https://github.com/openyurtio/openyurt/pull/357), [@yixingjia](https://github.com/yixingjia), [@lwmqwer](https://github.com/lwmqwer))
+- Proposal: add ingress feature support to nodepool ([#373](https://github.com/openyurtio/openyurt/pull/373), [@zzguang](https://github.com/zzguang), [@wenjun93](https://github.com/wenjun93))
+- Proposal: OpenYurt Convertor Operator for converting K8S to OpenYurt ([#389](https://github.com/openyurtio/openyurt/pull/389), [@gnunu](https://github.com/gnunu))
+- add traffic(from cloud to edge) collector metrics for yurthub ([#398](https://github.com/openyurtio/openyurt/pull/398),  [@rambohe-ch](https://github.com/rambohe-ch))
+- Add sync.Pool to cache *bufio.Reader in tunnel server ([#381](https://github.com/openyurtio/openyurt/pull/381), [@DrmagicE](https://github.com/DrmagicE))
+- improve tunnel availability ([#375](https://github.com/openyurtio/openyurt/pull/375), [@aholic](https://github.com/aholic))
+- yurtctl adds parameter enable app manager to control automatic deployment of yurtappmanager. ([#352](https://github.com/openyurtio/openyurt/pull/352), [@yanhui](https://github.com/yanyhui))
+
+### Bug Fixes
+
+- fix tunnel-agent/tunnel-server crashes when the local certificate can not be loaded correctly ([#378](https://github.com/openyurtio/openyurt/pull/378), [@SataQiu](https://github.com/SataQiu))
+- fix the error when cert-mgr-mode set to kubelet ([#359](https://github.com/openyurtio/openyurt/pull/359), [@qclc](https://github.com/qclc))
+- fix the same prefix key lock error ([#396](https://github.com/openyurtio/openyurt/pull/396), [@rambohe-ch](https://github.com/rambohe-ch))
 ---
 
 ## v0.4.0

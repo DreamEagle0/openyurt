@@ -18,6 +18,12 @@ package proxy
 
 import (
 	"net/http"
+	"time"
+
+	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/apiserver/pkg/endpoints/filters"
+	apirequest "k8s.io/apiserver/pkg/endpoints/request"
+	"k8s.io/apiserver/pkg/server"
 
 	"github.com/openyurtio/openyurt/cmd/yurthub/app/config"
 	"github.com/openyurtio/openyurt/pkg/yurthub/cachemanager"
@@ -28,16 +34,12 @@ import (
 	"github.com/openyurtio/openyurt/pkg/yurthub/proxy/util"
 	"github.com/openyurtio/openyurt/pkg/yurthub/transport"
 	hubutil "github.com/openyurtio/openyurt/pkg/yurthub/util"
-
-	"k8s.io/apimachinery/pkg/util/sets"
-	"k8s.io/apiserver/pkg/endpoints/filters"
-	apirequest "k8s.io/apiserver/pkg/endpoints/request"
-	"k8s.io/apiserver/pkg/server"
 )
 
 type yurtReverseProxy struct {
 	resolver            apirequest.RequestInfoResolver
 	loadBalancer        remote.LoadBalancer
+	checker             healthchecker.HealthChecker
 	localProxy          *local.LocalProxy
 	cacheMgr            cachemanager.CacheManager
 	maxRequestsInFlight int
@@ -65,15 +67,24 @@ func NewYurtReverseProxyHandler(
 		transportMgr,
 		healthChecker,
 		certManager,
+		yurtHubCfg.FilterChain,
 		stopCh)
 	if err != nil {
 		return nil, err
 	}
 
+	var localProxy *local.LocalProxy
+	// When yurthub is working in cloud mode, cacheMgr will be set to nil which means the local cache is disabled,
+	// so we don't need to create a LocalProxy.
+	if cacheMgr != nil {
+		localProxy = local.NewLocalProxy(cacheMgr, lb.IsHealthy)
+	}
+
 	yurtProxy := &yurtReverseProxy{
 		resolver:            resolver,
 		loadBalancer:        lb,
-		localProxy:          local.NewLocalProxy(cacheMgr, lb.IsHealthy),
+		checker:             healthChecker,
+		localProxy:          localProxy,
 		cacheMgr:            cacheMgr,
 		maxRequestsInFlight: yurtHubCfg.MaxRequestInFlight,
 		stopCh:              stopCh,
@@ -85,19 +96,27 @@ func NewYurtReverseProxyHandler(
 func (p *yurtReverseProxy) buildHandlerChain(handler http.Handler) http.Handler {
 	handler = util.WithRequestTrace(handler)
 	handler = util.WithRequestContentType(handler)
-	handler = util.WithCacheHeaderCheck(handler)
+	if p.cacheMgr != nil {
+		handler = util.WithCacheHeaderCheck(handler)
+	}
 	handler = util.WithRequestTimeout(handler)
-	handler = util.WithListRequestSelector(handler)
+	if p.cacheMgr != nil {
+		handler = util.WithListRequestSelector(handler)
+	}
+	handler = util.WithMaxInFlightLimit(handler, p.maxRequestsInFlight)
 	handler = util.WithRequestClientComponent(handler)
 	handler = filters.WithRequestInfo(handler, p.resolver)
-	handler = util.WithMaxInFlightLimit(handler, p.maxRequestsInFlight)
 	return handler
 }
 
 func (p *yurtReverseProxy) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
-	if !hubutil.IsKubeletLeaseReq(req) && p.loadBalancer.IsHealthy() {
+	isKubeletLeaseReq := hubutil.IsKubeletLeaseReq(req)
+	if !isKubeletLeaseReq && p.loadBalancer.IsHealthy() || p.localProxy == nil {
 		p.loadBalancer.ServeHTTP(rw, req)
 	} else {
+		if isKubeletLeaseReq {
+			p.checker.UpdateLastKubeletLeaseReqTime(time.Now())
+		}
 		p.localProxy.ServeHTTP(rw, req)
 	}
 }

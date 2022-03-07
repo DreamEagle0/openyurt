@@ -263,7 +263,7 @@ func TestDelete(t *testing.T) {
 						t.Errorf("%s: delete key(%s) expect error %v, but got %v", k, key, result.deleteErr, err)
 					}
 				} else if err != nil {
-					t.Errorf("%s: Got error %v, unable delete key %q", k, err, key)
+					t.Errorf("%s: Got error %v, unable to delete key %q", k, err, key)
 				}
 			}
 
@@ -279,7 +279,7 @@ func TestDelete(t *testing.T) {
 	}
 
 	if err = os.RemoveAll(testDir); err != nil {
-		t.Errorf("Got error %v, unable remove path %s", err, testDir)
+		t.Errorf("Got error %v, unable to remove path %s", err, testDir)
 	}
 }
 
@@ -366,7 +366,7 @@ func TestGet(t *testing.T) {
 	}
 
 	if err = os.RemoveAll(testDir); err != nil {
-		t.Errorf("Got error %v, unable remove path %s", err, testDir)
+		t.Errorf("Got error %v, unable to remove path %s", err, testDir)
 	}
 }
 
@@ -433,7 +433,7 @@ func TestListKeys(t *testing.T) {
 
 			keys, err := s.ListKeys(tc.listKey)
 			if err != nil {
-				t.Errorf("%s: Got error %v, unable list keys for %s", k, err, tc.listKey)
+				t.Errorf("%s: Got error %v, unable to list keys for %s", k, err, tc.listKey)
 			}
 
 			if len(tc.result) != len(keys) {
@@ -456,7 +456,7 @@ func TestListKeys(t *testing.T) {
 	}
 
 	if err = os.RemoveAll(testDir); err != nil {
-		t.Errorf("Got error %v, unable remove path %s", err, testDir)
+		t.Errorf("Got error %v, unable to remove path %s", err, testDir)
 	}
 }
 
@@ -549,7 +549,7 @@ func TestList(t *testing.T) {
 	}
 
 	if err = os.RemoveAll(testDir); err != nil {
-		t.Errorf("Got error %v, unable remove path %s", err, testDir)
+		t.Errorf("Got error %v, unable to remove path %s", err, testDir)
 	}
 }
 
@@ -626,7 +626,7 @@ func TestUpdate(t *testing.T) {
 			for key, data := range tc.result {
 				b, err := s.Get(key)
 				if err != nil {
-					t.Errorf("%s: Got error %v, unable get key %s", k, err, key)
+					t.Errorf("%s: Got error %v, unable to get key %s", k, err, key)
 				}
 
 				if data != string(b) {
@@ -644,7 +644,96 @@ func TestUpdate(t *testing.T) {
 	}
 
 	if err = os.RemoveAll(testDir); err != nil {
-		t.Errorf("Got error %v, unable remove path %s", err, testDir)
+		t.Errorf("Got error %v, unable to remove path %s", err, testDir)
+	}
+}
+
+func TestReplace(t *testing.T) {
+	testcases := map[string]struct {
+		listKey        string
+		preCreatedKeys map[string]string
+		replaceKeys    map[string]string
+		result         map[string]string
+		replaceErr     error
+	}{
+		"replace old files with contents": {
+			listKey: "kubelet/pods/default",
+			preCreatedKeys: map[string]string{
+				"kubelet/pods/default/foo1": "test-pod1",
+				"kubelet/pods/default/foo2": "test-pod2",
+			},
+			replaceKeys: map[string]string{
+				"kubelet/pods/default/foo3": "test-pod3",
+			},
+			result: map[string]string{
+				"kubelet/pods/default/foo3": "test-pod3",
+			},
+		},
+		"replace old files with empty contents": {
+			listKey: "kubelet/pods/default",
+			preCreatedKeys: map[string]string{
+				"kubelet/pods/default/foo1": "test-pod11",
+				"kubelet/pods/default/foo2": "test-pod21",
+			},
+			replaceKeys: map[string]string{},
+			result:      map[string]string{},
+		},
+	}
+	s, err := NewDiskStorage(testDir)
+	if err != nil {
+		t.Fatalf("unable to new disk storage, %v", err)
+	}
+
+	for k, tc := range testcases {
+		t.Run(k, func(t *testing.T) {
+			for key, data := range tc.preCreatedKeys {
+				err = s.Create(key, []byte(data))
+				if err != nil {
+					t.Errorf("%s: Got error %v, wanted successful create %s", k, err, key)
+				}
+			}
+
+			contents := make(map[string][]byte, len(tc.replaceKeys))
+			for key, data := range tc.replaceKeys {
+				contents[key] = []byte(data)
+			}
+
+			err = s.Replace(tc.listKey, contents)
+			if err != nil {
+				if tc.replaceErr != err {
+					t.Errorf("%s: expect error %v, but got %v", k, tc.replaceErr, err)
+				}
+			}
+
+			if keys, err := s.ListKeys(tc.listKey); err == nil {
+				if len(keys) != len(tc.result) {
+					t.Errorf("expect the number of keys: %v, but got %v", len(tc.result), len(keys))
+				}
+			} else {
+				t.Errorf("unable to list keys in the path of %s: %v", tc.listKey, err)
+			}
+
+			for key, data := range tc.result {
+				b, err := s.Get(key)
+				if err != nil {
+					t.Errorf("%s: Got error %v, unable to get key %s", k, err, key)
+				}
+
+				if data != string(b) {
+					t.Errorf("%s: expect updated data %s, but got %s", k, data, string(b))
+				}
+			}
+
+			for key := range tc.result {
+				if err = s.Delete(key); err != nil {
+					t.Errorf("%s failed to delete key %s, %v", k, key, err)
+				}
+			}
+		})
+	}
+
+	if err = os.RemoveAll(testDir); err != nil {
+		t.Errorf("Got error %v, unable to remove path %s", err, testDir)
 	}
 }
 
@@ -681,6 +770,12 @@ func TestLockKey(t *testing.T) {
 		},
 		"lock different key with pre-locked key ": {
 			preLockedKeys:    []string{"kubelet/pods/kube-system/foo1"},
+			lockKey:          "kubelet/pods/kube-system/foo2",
+			lockResult:       true,
+			lockVerifyResult: false,
+		},
+		"lock same prefix key with pre-locked key ": {
+			preLockedKeys:    []string{"kubelet/pods/kube-system/foo"},
 			lockKey:          "kubelet/pods/kube-system/foo2",
 			lockResult:       true,
 			lockVerifyResult: false,

@@ -22,16 +22,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/openyurtio/openyurt/cmd/yurt-tunnel-server/app/config"
-	"github.com/openyurtio/openyurt/pkg/projectinfo"
-	"github.com/openyurtio/openyurt/pkg/yurttunnel/constants"
-	kubeutil "github.com/openyurtio/openyurt/pkg/yurttunnel/kubernetes"
-	"github.com/openyurtio/openyurt/pkg/yurttunnel/pki"
-
 	"github.com/spf13/pflag"
 	"k8s.io/client-go/informers"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/apiserver-network-proxy/pkg/server"
+
+	"github.com/openyurtio/openyurt/cmd/yurt-tunnel-server/app/config"
+	"github.com/openyurtio/openyurt/pkg/projectinfo"
+	"github.com/openyurtio/openyurt/pkg/util/certmanager"
+	"github.com/openyurtio/openyurt/pkg/yurttunnel/constants"
+	kubeutil "github.com/openyurtio/openyurt/pkg/yurttunnel/kubernetes"
 )
 
 // ServerOptions has the information that required by the yurttunel-server
@@ -41,6 +41,7 @@ type ServerOptions struct {
 	InsecureBindAddr       string
 	CertDNSNames           string
 	CertIPs                string
+	CertDir                string
 	Version                bool
 	EnableIptables         bool
 	EnableDNSController    bool
@@ -91,6 +92,7 @@ func (o *ServerOptions) AddFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&o.InsecureBindAddr, "insecure-bind-address", o.InsecureBindAddr, fmt.Sprintf("the ip address on which the %s will listen for --insecure-port port.", projectinfo.GetServerName()))
 	fs.StringVar(&o.CertDNSNames, "cert-dns-names", o.CertDNSNames, "DNS names that will be added into server's certificate. (e.g., dns1,dns2)")
 	fs.StringVar(&o.CertIPs, "cert-ips", o.CertIPs, "IPs that will be added into server's certificate. (e.g., ip1,ip2)")
+	fs.StringVar(&o.CertDir, "cert-dir", o.CertDir, "The directory of certificate stored at.")
 	fs.BoolVar(&o.EnableIptables, "enable-iptables", o.EnableIptables, "If allow iptable manager to set the dnat rule.")
 	fs.BoolVar(&o.EnableDNSController, "enable-dns-controller", o.EnableDNSController, "If allow DNS controller to set the dns rules.")
 	fs.BoolVar(&o.EgressSelectorEnabled, "egress-selector-enable", o.EgressSelectorEnabled, "If the apiserver egress selector has been enabled.")
@@ -114,6 +116,7 @@ func (o *ServerOptions) Config() (*config.Config, error) {
 		DNSSyncPeriod:         o.DNSSyncPeriod,
 		CertDNSNames:          make([]string, 0),
 		CertIPs:               make([]net.IP, 0),
+		CertDir:               o.CertDir,
 		ServerCount:           o.ServerCount,
 		ProxyStrategy:         o.ProxyStrategy,
 	}
@@ -137,7 +140,7 @@ func (o *ServerOptions) Config() (*config.Config, error) {
 	cfg.ListenAddrForMaster = net.JoinHostPort(o.BindAddr, o.SecurePort)
 	cfg.ListenInsecureAddrForMaster = net.JoinHostPort(o.InsecureBindAddr, o.InsecurePort)
 	cfg.ListenMetaAddr = net.JoinHostPort(o.InsecureBindAddr, o.MetaPort)
-	cfg.RootCert, err = pki.GenRootCertPool(o.KubeConfig, constants.YurttunnelCAFile)
+	cfg.RootCert, err = certmanager.GenRootCertPool(o.KubeConfig, constants.YurttunnelCAFile)
 	if err != nil {
 		return nil, fmt.Errorf("fail to generate the rootCertPool: %s", err)
 	}
@@ -150,7 +153,7 @@ func (o *ServerOptions) Config() (*config.Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	cfg.SharedInformerFactory = informers.NewSharedInformerFactory(cfg.Client, 10*time.Second)
+	cfg.SharedInformerFactory = informers.NewSharedInformerFactory(cfg.Client, 24*time.Hour)
 
 	klog.Infof("yurttunnel server config: %#+v", cfg)
 	return cfg, nil

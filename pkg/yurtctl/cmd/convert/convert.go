@@ -19,67 +19,47 @@ package convert
 import (
 	"context"
 	"fmt"
+	"net"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
-	"github.com/spf13/pflag"
+	batchv1 "k8s.io/api/batch/v1"
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	bootstrapapi "k8s.io/cluster-bootstrap/token/api"
-	"k8s.io/klog"
-	clusterinfophase "k8s.io/kubernetes/cmd/kubeadm/app/phases/bootstraptoken/clusterinfo"
-	nodeutil "k8s.io/kubernetes/pkg/controller/util/node"
+	"k8s.io/klog/v2"
 
-	"github.com/openyurtio/openyurt/pkg/projectinfo"
-	"github.com/openyurtio/openyurt/pkg/yurtctl/constants"
+	nodeservant "github.com/openyurtio/openyurt/pkg/node-servant"
+	"github.com/openyurtio/openyurt/pkg/preflight"
+	kubeadmapi "github.com/openyurtio/openyurt/pkg/yurtctl/kubernetes/kubeadm/app/phases/bootstraptoken/clusterinfo"
 	"github.com/openyurtio/openyurt/pkg/yurtctl/lock"
 	kubeutil "github.com/openyurtio/openyurt/pkg/yurtctl/util/kubernetes"
 	strutil "github.com/openyurtio/openyurt/pkg/yurtctl/util/strings"
-)
-
-// Provider signifies the provider type
-type Provider string
-
-const (
-	// ProviderMinikube is used if the target kubernetes is run on minikube
-	ProviderMinikube Provider = "minikube"
-	// ProviderACK is used if the target kubernetes is run on ack
-	ProviderACK     Provider = "ack"
-	ProviderKubeadm Provider = "kubeadm"
-	// ProviderKind is used if the target kubernetes is run on kind
-	ProviderKind Provider = "kind"
+	"github.com/openyurtio/openyurt/pkg/yurthub/util"
 )
 
 const (
 	// defaultYurthubHealthCheckTimeout defines the default timeout for yurthub health check phase
 	defaultYurthubHealthCheckTimeout = 2 * time.Minute
+
+	latestYurtHubImage               = "openyurt/yurthub:latest"
+	latestYurtControllerManagerImage = "openyurt/yurt-controller-manager:latest"
+	latestNodeServantImage           = "openyurt/node-servant:latest"
+	latestYurtTunnelServerImage      = "openyurt/yurt-tunnel-server:latest"
+	latestYurtTunnelAgentImage       = "openyurt/yurt-tunnel-agent:latest"
+	versionedYurtAppManagerImage     = "openyurt/yurt-app-manager:v0.4.0"
 )
 
-// ConvertOptions has the information that required by convert operation
-type ConvertOptions struct {
-	clientSet                  *kubernetes.Clientset
-	CloudNodes                 []string
-	Provider                   Provider
-	YurhubImage                string
-	YurthubHealthCheckTimeout  time.Duration
-	YurtControllerManagerImage string
-	YurctlServantImage         string
-	YurttunnelServerImage      string
-	YurttunnelAgentImage       string
-	PodMainfestPath            string
-	KubeadmConfPath            string
-	DeployTunnel               bool
-	kubeConfigPath             string
-}
-
-// NewConvertOptions creates a new ConvertOptions
-func NewConvertOptions() *ConvertOptions {
-	return &ConvertOptions{
-		CloudNodes: []string{},
-	}
+// ClusterConverter do the cluster convert job.
+// During the conversion, the pre-check will be performed first, and
+// the conversion will be performed only after the pre-check is passed.
+type ClusterConverter struct {
+	ConvertOptions
 }
 
 // NewConvertCmd generates a new convert command
@@ -90,360 +70,278 @@ func NewConvertCmd() *cobra.Command {
 		Short: "Converts the kubernetes cluster to a yurt cluster",
 		Run: func(cmd *cobra.Command, _ []string) {
 			if err := co.Complete(cmd.Flags()); err != nil {
-				klog.Fatalf("fail to complete the convert option: %s", err)
+				klog.Errorf("Fail to complete the convert option: %s", err)
+				os.Exit(1)
 			}
 			if err := co.Validate(); err != nil {
-				klog.Fatalf("convert option is invalid: %s", err)
+				klog.Errorf("Fail to validate convert option: %s", err)
+				os.Exit(1)
 			}
-			if err := co.RunConvert(); err != nil {
-				klog.Fatalf("fail to convert kubernetes to yurt: %s", err)
+			converter := NewClusterConverter(co)
+			if err := converter.PreflightCheck(); err != nil {
+				klog.Errorf("Fail to run pre-flight checks: %s", err)
+				os.Exit(1)
+			}
+			if err := converter.RunConvert(); err != nil {
+				klog.Errorf("Fail to convert the cluster: %s", err)
+				os.Exit(1)
 			}
 		},
+		Args: cobra.NoArgs,
 	}
 
-	cmd.AddCommand(NewConvertEdgeNodeCmd())
-
-	cmd.Flags().StringP("cloud-nodes", "c", "",
-		"The list of cloud nodes.(e.g. -c cloudnode1,cloudnode2)")
-	cmd.Flags().StringP("provider", "p", "minikube",
-		"The provider of the original Kubernetes cluster.")
-	cmd.Flags().String("yurthub-image",
-		"openyurt/yurthub:latest",
-		"The yurthub image.")
-	cmd.Flags().Duration("yurthub-healthcheck-timeout", defaultYurthubHealthCheckTimeout,
-		"The timeout for yurthub health check.")
-	cmd.Flags().String("yurt-controller-manager-image",
-		"openyurt/yurt-controller-manager:latest",
-		"The yurt-controller-manager image.")
-	cmd.Flags().String("yurtctl-servant-image",
-		"openyurt/yurtctl-servant:latest",
-		"The yurtctl-servant image.")
-	cmd.Flags().String("kubeadm-conf-path",
-		"/etc/systemd/system/kubelet.service.d/10-kubeadm.conf",
-		"The path to kubelet service conf that is used by kubelet component to join the cluster on the edge node.")
-	cmd.Flags().String("yurt-tunnel-server-image",
-		"openyurt/yurt-tunnel-server:latest",
-		"The yurt-tunnel-server image.")
-	cmd.Flags().String("yurt-tunnel-agent-image",
-		"openyurt/yurt-tunnel-agent:latest",
-		"The yurt-tunnel-agent image.")
-	cmd.Flags().BoolP("deploy-yurttunnel", "t", false,
-		"if set, yurttunnel will be deployed.")
-	cmd.Flags().String("pod-manifest-path",
-		"/etc/kubernetes/manifests",
-		"Path to the directory on edge node containing static pod files.")
-
+	setFlags(cmd)
 	return cmd
 }
 
-// Complete completes all the required options
-func (co *ConvertOptions) Complete(flags *pflag.FlagSet) error {
-	cnStr, err := flags.GetString("cloud-nodes")
-	if err != nil {
-		return err
-	}
-	if cnStr != "" {
-		co.CloudNodes = strings.Split(cnStr, ",")
-	} else {
-		err := fmt.Errorf("The '--cloud nodes' parameter cannot be empty.Please specify the cloud node first, and then execute the yurtctl convert command")
-		return err
-	}
+// setFlags sets flags.
+func setFlags(cmd *cobra.Command) {
+	cmd.Flags().StringP(
+		"cloud-nodes", "c", "",
+		"The list of cloud nodes.(e.g. -c cloudnode1,cloudnode2)",
+	)
+	cmd.Flags().StringP(
+		"autonomous-nodes", "a", "",
+		"The list of nodes that will be marked as autonomous. If not set, all edge nodes will be marked as autonomous."+
+			"(e.g. -a autonomousnode1,autonomousnode2)",
+	)
+	cmd.Flags().String(
+		"yurt-tunnel-server-address", "",
+		"The yurt-tunnel-server address.",
+	)
+	cmd.Flags().String(
+		"kubeadm-conf-path", "",
+		"The path to kubelet service conf that is used by kubelet component to join the cluster on the edge node.",
+	)
+	cmd.Flags().StringP(
+		"provider", "p", "minikube",
+		"The provider of the original Kubernetes cluster.",
+	)
+	cmd.Flags().Duration(
+		"yurthub-healthcheck-timeout", defaultYurthubHealthCheckTimeout,
+		"The timeout for yurthub health check.",
+	)
+	cmd.Flags().Duration(
+		"wait-servant-job-timeout", kubeutil.DefaultWaitServantJobTimeout,
+		"The timeout for servant-job run check.")
+	cmd.Flags().String(
+		"ignore-preflight-errors", "",
+		"A list of checks whose errors will be shown as warnings. Example: 'NodeEdgeWorkerLabel,NodeAutonomy'.Value 'all' ignores errors from all checks.",
+	)
+	cmd.Flags().BoolP(
+		"deploy-yurttunnel", "t", false,
+		"If set, yurttunnel will be deployed.",
+	)
+	cmd.Flags().BoolP(
+		"enable-app-manager", "e", false,
+		"If set, yurtappmanager will be deployed.",
+	)
+	cmd.Flags().String(
+		"system-architecture", "amd64",
+		"The system architecture of cloud nodes.",
+	)
 
-	dt, err := flags.GetBool("deploy-yurttunnel")
-	if err != nil {
-		return err
-	}
-	co.DeployTunnel = dt
-
-	pStr, err := flags.GetString("provider")
-	if err != nil {
-		return err
-	}
-	co.Provider = Provider(pStr)
-
-	yhi, err := flags.GetString("yurthub-image")
-	if err != nil {
-		return err
-	}
-	co.YurhubImage = yhi
-
-	yurthubHealthCheckTimeout, err := flags.GetDuration("yurthub-healthcheck-timeout")
-	if err != nil {
-		return err
-	}
-	co.YurthubHealthCheckTimeout = yurthubHealthCheckTimeout
-
-	ycmi, err := flags.GetString("yurt-controller-manager-image")
-	if err != nil {
-		return err
-	}
-	co.YurtControllerManagerImage = ycmi
-
-	ycsi, err := flags.GetString("yurtctl-servant-image")
-	if err != nil {
-		return err
-	}
-	co.YurctlServantImage = ycsi
-
-	ytsi, err := flags.GetString("yurt-tunnel-server-image")
-	if err != nil {
-		return err
-	}
-	co.YurttunnelServerImage = ytsi
-
-	ytai, err := flags.GetString("yurt-tunnel-agent-image")
-	if err != nil {
-		return err
-	}
-	co.YurttunnelAgentImage = ytai
-
-	pmp, err := flags.GetString("pod-manifest-path")
-	if err != nil {
-		return err
-	}
-	co.PodMainfestPath = pmp
-
-	kcp, err := flags.GetString("kubeadm-conf-path")
-	if err != nil {
-		return err
-	}
-	co.KubeadmConfPath = kcp
-
-	// parse kubeconfig and generate the clientset
-	co.clientSet, err = kubeutil.GenClientSet(flags)
-	if err != nil {
-		return err
-	}
-
-	// prepare path of cluster kubeconfig file
-	co.kubeConfigPath, err = kubeutil.PrepareKubeConfigPath(flags)
-	if err != nil {
-		return err
-	}
-	return nil
+	cmd.Flags().String("yurthub-image", latestYurtHubImage, "The yurthub image.")
+	cmd.Flags().String("yurt-controller-manager-image", latestYurtControllerManagerImage, "The yurt-controller-manager image.")
+	cmd.Flags().String("node-servant-image", latestNodeServantImage, "The node-servant image.")
+	cmd.Flags().String("yurt-tunnel-server-image", latestYurtTunnelServerImage, "The yurt-tunnel-server image.")
+	cmd.Flags().String("yurt-tunnel-agent-image", latestYurtTunnelAgentImage, "The yurt-tunnel-agent image.")
+	cmd.Flags().String("yurt-app-manager-image", versionedYurtAppManagerImage, "The yurt-app-manager image.")
 }
 
-// Validate makes sure provided values for ConvertOptions are valid
-func (co *ConvertOptions) Validate() error {
-	if co.Provider != ProviderMinikube && co.Provider != ProviderACK &&
-		co.Provider != ProviderKubeadm && co.Provider != ProviderKind {
-		return fmt.Errorf("unknown provider: %s, valid providers are: minikube, ack, kubeadm, kind",
-			co.Provider)
+func NewClusterConverter(co *ConvertOptions) *ClusterConverter {
+	return &ClusterConverter{
+		*co,
+	}
+}
+
+// preflightCheck executes preflight checks logic.
+func (c *ClusterConverter) PreflightCheck() error {
+	fmt.Println("[preflight] Running pre-flight checks")
+	if err := preflight.RunConvertClusterChecks(c.ClientSet, c.IgnorePreflightErrors); err != nil {
+		return err
+	}
+
+	fmt.Println("[preflight] Running node-servant-preflight-convert jobs to check on edge and cloud nodes. " +
+		"Job running may take a long time, and job failure will affect the execution of the next stage")
+	jobLst, err := c.generatePreflightJobs()
+	if err != nil {
+		return err
+	}
+	if err := preflight.RunNodeServantJobCheck(c.ClientSet, jobLst, c.WaitServantJobTimeout, kubeutil.CheckServantJobPeriod, c.IgnorePreflightErrors); err != nil {
+		return err
 	}
 
 	return nil
 }
 
 // RunConvert performs the conversion
-func (co *ConvertOptions) RunConvert() (err error) {
-	if err = lock.AcquireLock(co.clientSet); err != nil {
+func (c *ClusterConverter) RunConvert() (err error) {
+	if err = lock.AcquireLock(c.ClientSet); err != nil {
 		return
 	}
 	defer func() {
-		if releaseLockErr := lock.ReleaseLock(co.clientSet); releaseLockErr != nil {
+		if releaseLockErr := lock.ReleaseLock(c.ClientSet); releaseLockErr != nil {
 			klog.Error(releaseLockErr)
 		}
 	}()
-	klog.V(4).Info("successfully acquire the lock")
 
-	// 1. check the server version
-	if err = kubeutil.ValidateServerVersion(co.clientSet); err != nil {
-		return
-	}
-	klog.V(4).Info("the server version is valid")
-
-	// 1.1. check the state of worker nodes
-	nodeLst, err := co.clientSet.CoreV1().Nodes().List(context.Background(), metav1.ListOptions{})
+	nodeLst, err := c.ClientSet.CoreV1().Nodes().List(context.Background(), metav1.ListOptions{})
 	if err != nil {
 		return
 	}
+	edgeNodeNames := getEdgeNodeNames(nodeLst, c.CloudNodes)
+
+	fmt.Println("[runConvert] Label all nodes with edgeworker label, annotate all nodes with autonomy annotation")
 	for _, node := range nodeLst.Items {
-		if !strutil.IsInStringLst(co.CloudNodes, node.GetName()) {
-			_, condition := nodeutil.GetNodeCondition(&node.Status, v1.NodeReady)
-			if condition == nil || condition.Status != v1.ConditionTrue {
-				klog.Errorf("Cannot do the convert, the status of worker node: %s is not 'Ready'.", node.Name)
-				return
-			}
-		}
-	}
-	klog.V(4).Info("the status of worker nodes are satisfied")
-
-	// 2. label nodes as cloud node or edge node
-	var edgeNodeNames []string
-	for _, node := range nodeLst.Items {
-		if strutil.IsInStringLst(co.CloudNodes, node.GetName()) {
-			// label node as cloud node
-			klog.Infof("mark %s as the cloud-node", node.GetName())
-			if _, err = kubeutil.LabelNode(co.clientSet,
-				&node, projectinfo.GetEdgeWorkerLabelKey(), "false"); err != nil {
-				return
-			}
-			continue
-		}
-		edgeNodeNames = append(edgeNodeNames, node.GetName())
-	}
-
-	// 3. deploy yurt controller manager
-	// create a service account for yurt-controller-manager
-	err = kubeutil.CreateServiceAccountFromYaml(co.clientSet,
-		"kube-system", constants.YurtControllerManagerServiceAccount)
-	if err != nil {
-		return
-	}
-	// create the clusterrole
-	err = kubeutil.CreateClusterRoleFromYaml(co.clientSet,
-		constants.YurtControllerManagerClusterRole)
-	if err != nil {
-		return err
-	}
-	// bind the clusterrole
-	err = kubeutil.CreateClusterRoleBindingFromYaml(co.clientSet,
-		constants.YurtControllerManagerClusterRoleBinding)
-	if err != nil {
-		return
-	}
-	// create the yurt-controller-manager deployment
-	err = kubeutil.CreateDeployFromYaml(co.clientSet,
-		"kube-system",
-		constants.YurtControllerManagerDeployment,
-		map[string]string{
-			"image":         co.YurtControllerManagerImage,
-			"edgeNodeLabel": projectinfo.GetEdgeWorkerLabelKey()})
-	if err != nil {
-		return
-	}
-
-	// 4. delete the system:controller:node-controller clusterrolebinding to disable node-controller
-	if err = co.clientSet.RbacV1().ClusterRoleBindings().Delete(context.Background(), "system:controller:node-controller", metav1.DeleteOptions{
-		PropagationPolicy: &kubeutil.PropagationPolicy,
-	}); err != nil && !apierrors.IsNotFound(err) {
-		klog.Errorf("fail to delete clusterrolebinding system:controller:node-controller: %v", err)
-		return
-	}
-
-	// 5. deploy the yurttunnel if required
-	if co.DeployTunnel {
-		if err = deployYurttunnelServer(co.clientSet,
-			co.CloudNodes,
-			co.YurttunnelServerImage); err != nil {
-			err = fmt.Errorf("fail to deploy the yurt-tunnel-server: %s", err)
+		isEdge := strutil.IsInStringLst(edgeNodeNames, node.Name)
+		isAuto := strutil.IsInStringLst(c.AutonomousNodes, node.Name)
+		if _, err = kubeutil.AddEdgeWorkerLableAndAutonomyAnnotation(c.ClientSet, &node,
+			strconv.FormatBool(isEdge), strconv.FormatBool(isAuto)); err != nil {
 			return
 		}
-		klog.Info("yurt-tunnel-server is deployed")
+	}
+
+	// deploy yurt controller manager
+	fmt.Println("[runConvert] Deploying yurt-controller-manager")
+	if err = kubeutil.DeployYurtControllerManager(c.ClientSet, c.YurtControllerManagerImage); err != nil {
+		return
+	}
+
+	// deploy the yurttunnel if required
+	if c.DeployTunnel {
+		fmt.Println("[runConvert] Deploying yurt-tunnel-server and yurt-tunnel-agent")
+		var certIP string
+		if c.YurttunnelServerAddress != "" {
+			certIP, _, _ = net.SplitHostPort(c.YurttunnelServerAddress)
+		}
+		if err = kubeutil.DeployYurttunnelServer(c.ClientSet,
+			certIP,
+			c.YurttunnelServerImage,
+			c.SystemArchitecture); err != nil {
+			return
+		}
 		// we will deploy yurt-tunnel-agent on every edge node
-		if err = deployYurttunnelAgent(co.clientSet,
-			edgeNodeNames,
-			co.YurttunnelAgentImage); err != nil {
-			err = fmt.Errorf("fail to deploy the yurt-tunnel-agent: %s", err)
+		if err = kubeutil.DeployYurttunnelAgent(c.ClientSet,
+			c.YurttunnelServerAddress,
+			c.YurttunnelAgentImage); err != nil {
 			return
 		}
-		klog.Info("yurt-tunnel-agent is deployed")
 	}
 
-	// 6. prepare kube-public/cluster-info configmap before convert
-	err = prepareClusterInfoConfigMap(co.clientSet, co.kubeConfigPath)
-	if err != nil {
-		klog.Errorf("fail to prepre cluster-info configmap, %v", err)
+	// deploy the yurtappmanager if required
+	if c.EnableAppManager {
+		fmt.Println("[runConvert] Deploying yurt-app-manager")
+		if err = kubeutil.DeployYurtAppManager(c.ClientSet,
+			c.YurtAppManagerImage,
+			c.YurtAppManagerClientSet,
+			c.SystemArchitecture); err != nil {
+			return
+		}
+	}
+
+	fmt.Println("[runConvert] Running jobs for convert. Job running may take a long time, and job failure will not affect the execution of the next stage")
+
+	// disable node-controller
+	fmt.Println("[runConvert] Running disable-node-controller jobs to disable node-controller")
+	var kcmNodeNames []string
+	if kcmNodeNames, err = kubeutil.GetKubeControllerManagerHANodes(c.ClientSet); err != nil {
 		return
 	}
 
-	// 7. deploy yurt-hub and reset the kubelet service
-	klog.Infof("deploying the yurt-hub and resetting the kubelet service...")
-	joinToken, err := kubeutil.GetOrCreateJoinTokenString(co.clientSet)
-	if err != nil {
-		return err
-	}
-
-	ctx := map[string]string{
-		"provider":              string(co.Provider),
-		"action":                "convert",
-		"yurtctl_servant_image": co.YurctlServantImage,
-		"yurthub_image":         co.YurhubImage,
-		"joinToken":             joinToken,
-		"pod_manifest_path":     co.PodMainfestPath,
-		"kubeadm_conf_path":     co.KubeadmConfPath,
-	}
-
-	if co.YurthubHealthCheckTimeout != defaultYurthubHealthCheckTimeout {
-		ctx["yurthub_healthcheck_timeout"] = co.YurthubHealthCheckTimeout.String()
-	}
-
-	if err = kubeutil.RunServantJobs(co.clientSet, ctx, edgeNodeNames, true); err != nil {
-		klog.Errorf("fail to run ServantJobs: %s", err)
+	if err = kubeutil.RunServantJobs(c.ClientSet, c.WaitServantJobTimeout, func(nodeName string) (*batchv1.Job, error) {
+		ctx := map[string]string{
+			"node_servant_image": c.NodeServantImage,
+			"pod_manifest_path":  c.PodMainfestPath,
+		}
+		return kubeutil.RenderServantJob("disable", ctx, nodeName)
+	}, kcmNodeNames, os.Stderr); err != nil {
 		return
 	}
-	klog.Info("the yurt-hub is deployed")
+
+	// deploy yurt-hub and reset the kubelet service on edge nodes.
+	fmt.Println("[runConvert] Running node-servant-convert jobs to deploy the yurt-hub and reset the kubelet service on edge and cloud nodes")
+	var joinToken string
+	if joinToken, err = prepareYurthubStart(c.ClientSet, c.KubeConfigPath); err != nil {
+		return
+	}
+
+	convertCtx := map[string]string{
+		"node_servant_image": c.NodeServantImage,
+		"yurthub_image":      c.YurhubImage,
+		"joinToken":          joinToken,
+		"kubeadm_conf_path":  c.KubeadmConfPath,
+		"working_mode":       string(util.WorkingModeEdge),
+	}
+	if c.YurthubHealthCheckTimeout != defaultYurthubHealthCheckTimeout {
+		convertCtx["yurthub_healthcheck_timeout"] = c.YurthubHealthCheckTimeout.String()
+	}
+	if len(edgeNodeNames) != 0 {
+		convertCtx["working_mode"] = string(util.WorkingModeEdge)
+		if err = kubeutil.RunServantJobs(c.ClientSet, c.WaitServantJobTimeout, func(nodeName string) (*batchv1.Job, error) {
+			return nodeservant.RenderNodeServantJob("convert", convertCtx, nodeName)
+		}, edgeNodeNames, os.Stderr); err != nil {
+			return
+		}
+	}
+
+	// deploy yurt-hub and reset the kubelet service on cloud nodes
+	convertCtx["working_mode"] = string(util.WorkingModeCloud)
+	if err = kubeutil.RunServantJobs(c.ClientSet, c.WaitServantJobTimeout, func(nodeName string) (*batchv1.Job, error) {
+		return nodeservant.RenderNodeServantJob("convert", convertCtx, nodeName)
+	}, c.CloudNodes, os.Stderr); err != nil {
+		return
+	}
+
+	fmt.Println("[runConvert] If any job fails, you can get job information through 'kubectl get jobs -n kube-system' to debug.\n" +
+		"\tNote that before the next conversion, please delete all related jobs so as not to affect the conversion.")
 
 	return
+
 }
 
-func deployYurttunnelServer(
-	client *kubernetes.Clientset,
-	cloudNodes []string,
-	yurttunnelServerImage string) error {
-	// 1. create the ClusterRole
-	if err := kubeutil.CreateClusterRoleFromYaml(client,
-		constants.YurttunnelServerClusterRole); err != nil {
-		return err
+func prepareYurthubStart(cliSet *kubernetes.Clientset, kcfg string) (string, error) {
+	// prepare kube-public/cluster-info configmap before convert
+	if err := prepareClusterInfoConfigMap(cliSet, kcfg); err != nil {
+		return "", err
 	}
 
-	// 2. create the ServiceAccount
-	if err := kubeutil.CreateServiceAccountFromYaml(client, "kube-system",
-		constants.YurttunnelServerServiceAccount); err != nil {
-		return err
+	// prepare global settings(like RBAC, configmap) for yurthub
+	if err := kubeutil.DeployYurthubSetting(cliSet); err != nil {
+		return "", err
 	}
 
-	// 3. create the ClusterRoleBinding
-	if err := kubeutil.CreateClusterRoleBindingFromYaml(client,
-		constants.YurttunnelServerClusterRolebinding); err != nil {
-		return err
+	// prepare join-token for yurthub
+	joinToken, err := kubeutil.GetOrCreateJoinTokenString(cliSet)
+	if err != nil || joinToken == "" {
+		return "", fmt.Errorf("fail to get join token: %v", err)
 	}
+	return joinToken, nil
 
-	// 4. create the Service
-	if err := kubeutil.CreateServiceFromYaml(client,
-		constants.YurttunnelServerService); err != nil {
-		return err
-	}
-
-	// 5. create the internal Service(type=ClusterIP)
-	if err := kubeutil.CreateServiceFromYaml(client,
-		constants.YurttunnelServerInternalService); err != nil {
-		return err
-	}
-
-	// 6. create the Configmap
-	if err := kubeutil.CreateConfigMapFromYaml(client,
-		"kube-system",
-		constants.YurttunnelServerConfigMap); err != nil {
-		return err
-	}
-
-	// 7. create the Deployment
-	if err := kubeutil.CreateDeployFromYaml(client,
-		"kube-system",
-		constants.YurttunnelServerDeployment,
-		map[string]string{
-			"image":           yurttunnelServerImage,
-			"edgeWorkerLabel": projectinfo.GetEdgeWorkerLabelKey()}); err != nil {
-		return err
-	}
-
-	return nil
 }
 
-func deployYurttunnelAgent(
-	client *kubernetes.Clientset,
-	tunnelAgentNodes []string,
-	yurttunnelAgentImage string) error {
-	// 1. Deploy the yurt-tunnel-agent DaemonSet
-	if err := kubeutil.CreateDaemonSetFromYaml(client,
-		constants.YurttunnelAgentDaemonSet,
-		map[string]string{
-			"image":           yurttunnelAgentImage,
-			"edgeWorkerLabel": projectinfo.GetEdgeWorkerLabelKey()}); err != nil {
-		return err
+// generatePreflightJobs generate preflight-check job for each node
+func (c *ClusterConverter) generatePreflightJobs() ([]*batchv1.Job, error) {
+	jobLst := make([]*batchv1.Job, 0)
+	preflightCtx := map[string]string{
+		"node_servant_image":      c.NodeServantImage,
+		"kubeadm_conf_path":       c.KubeadmConfPath,
+		"ignore_preflight_errors": strings.Join(c.IgnorePreflightErrors.List(), ","),
 	}
-	return nil
+
+	nodeLst, err := c.ClientSet.CoreV1().Nodes().List(context.Background(), metav1.ListOptions{})
+	if err != nil {
+		return nil, err
+	}
+	for _, node := range nodeLst.Items {
+		job, err := nodeservant.RenderNodeServantJob("preflight-convert", preflightCtx, node.Name)
+		if err != nil {
+			return nil, fmt.Errorf("fail to get job for node %s: %s", node.Name, err)
+		}
+		jobLst = append(jobLst, job)
+	}
+
+	return jobLst, nil
 }
 
 // prepareClusterInfoConfigMap will create cluster-info configmap in kube-public namespace if it does not exist
@@ -451,18 +349,26 @@ func prepareClusterInfoConfigMap(client *kubernetes.Clientset, file string) erro
 	info, err := client.CoreV1().ConfigMaps(metav1.NamespacePublic).Get(context.Background(), bootstrapapi.ConfigMapClusterInfo, metav1.GetOptions{})
 	if err != nil && apierrors.IsNotFound(err) {
 		// Create the cluster-info ConfigMap with the associated RBAC rules
-		if err := clusterinfophase.CreateBootstrapConfigMapIfNotExists(client, file); err != nil {
+		if err := kubeadmapi.CreateBootstrapConfigMapIfNotExists(client, file); err != nil {
 			return fmt.Errorf("error creating bootstrap ConfigMap, %v", err)
 		}
-		if err := clusterinfophase.CreateClusterInfoRBACRules(client); err != nil {
+		if err := kubeadmapi.CreateClusterInfoRBACRules(client); err != nil {
 			return fmt.Errorf("error creating clusterinfo RBAC rules, %v", err)
 		}
 	} else if err != nil || info == nil {
-		klog.Errorf("fail to get configmap, %v", err)
 		return fmt.Errorf("fail to get configmap, %v", err)
 	} else {
-		klog.Infof("%s/%s configmap already exists, skip to prepare it", info.Namespace, info.Name)
+		klog.V(4).Infof("%s/%s configmap already exists, skip to prepare it", info.Namespace, info.Name)
 	}
 
 	return nil
+}
+
+func getEdgeNodeNames(nodeLst *v1.NodeList, cloudNodeNames []string) (edgeNodeNames []string) {
+	for _, node := range nodeLst.Items {
+		if !strutil.IsInStringLst(cloudNodeNames, node.GetName()) {
+			edgeNodeNames = append(edgeNodeNames, node.GetName())
+		}
+	}
+	return
 }

@@ -19,42 +19,41 @@ package cmd
 import (
 	goflag "flag"
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 	flag "github.com/spf13/pflag"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 
 	"github.com/openyurtio/openyurt/pkg/projectinfo"
 	"github.com/openyurtio/openyurt/pkg/yurtctl/cmd/clusterinfo"
 	"github.com/openyurtio/openyurt/pkg/yurtctl/cmd/convert"
+	"github.com/openyurtio/openyurt/pkg/yurtctl/cmd/join"
 	"github.com/openyurtio/openyurt/pkg/yurtctl/cmd/markautonomous"
+	"github.com/openyurtio/openyurt/pkg/yurtctl/cmd/reset"
 	"github.com/openyurtio/openyurt/pkg/yurtctl/cmd/revert"
+	"github.com/openyurtio/openyurt/pkg/yurtctl/cmd/yurtinit"
 )
 
 // NewYurtctlCommand creates a new yurtctl command
 func NewYurtctlCommand() *cobra.Command {
+	version := fmt.Sprintf("%#v", projectinfo.Get())
 	cmds := &cobra.Command{
-		Use:   "yurtctl",
-		Short: "yurtctl controls the yurt cluster",
-		Run: func(cmd *cobra.Command, args []string) {
-			printV, _ := cmd.Flags().GetBool("version")
-			if printV {
-				fmt.Printf("yurtctl: %#v\n", projectinfo.Get())
-				return
-			}
-			fmt.Printf("yurtctl version: %#v\n", projectinfo.Get())
-
-			showHelp(cmd, args)
-		},
+		Use:     "yurtctl",
+		Short:   "yurtctl controls the yurt cluster",
+		Version: version,
 	}
 
+	setVersion(cmds)
 	// add kubeconfig to persistent flags
 	cmds.PersistentFlags().String("kubeconfig", "", "The path to the kubeconfig file")
-	cmds.PersistentFlags().Bool("version", false, "print  the version information.")
 	cmds.AddCommand(convert.NewConvertCmd())
 	cmds.AddCommand(revert.NewRevertCmd())
 	cmds.AddCommand(markautonomous.NewMarkAutonomousCmd())
 	cmds.AddCommand(clusterinfo.NewClusterInfoCmd())
+	cmds.AddCommand(yurtinit.NewCmdInit())
+	cmds.AddCommand(join.NewCmdJoin(os.Stdout, nil))
+	cmds.AddCommand(reset.NewCmdReset(os.Stdin, os.Stdout, nil))
 
 	klog.InitFlags(nil)
 	// goflag.Parse()
@@ -63,7 +62,6 @@ func NewYurtctlCommand() *cobra.Command {
 	return cmds
 }
 
-// showHelp shows the help message
-func showHelp(cmd *cobra.Command, _ []string) {
-	cmd.Help()
+func setVersion(cmd *cobra.Command) {
+	cmd.SetVersionTemplate(`{{with .Name}}{{printf "%s " .}}{{end}}{{printf "version: %s" .Version}}`)
 }

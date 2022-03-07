@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/openyurtio/openyurt/pkg/controller/certificates"
 	lifecyclecontroller "github.com/openyurtio/openyurt/pkg/controller/nodelifecycle"
 )
 
@@ -45,11 +46,22 @@ func startNodeLifecycleController(ctx ControllerContext) (http.Handler, bool, er
 		ctx.ComponentConfig.NodeLifecycleController.SecondaryNodeEvictionRate,
 		ctx.ComponentConfig.NodeLifecycleController.LargeClusterSizeThreshold,
 		ctx.ComponentConfig.NodeLifecycleController.UnhealthyZoneThreshold,
-		ctx.ComponentConfig.NodeLifecycleController.EnableTaintManager,
+		*ctx.ComponentConfig.NodeLifecycleController.EnableTaintManager,
 	)
 	if err != nil {
 		return nil, true, err
 	}
 	go lifecycleController.Run(ctx.Stop)
+	return nil, true, nil
+}
+
+func startYurtCSRApproverController(ctx ControllerContext) (http.Handler, bool, error) {
+	clientSet := ctx.ClientBuilder.ClientOrDie("csr-controller")
+	csrApprover, err := certificates.NewCSRApprover(clientSet, ctx.InformerFactory)
+	if err != nil {
+		return nil, false, err
+	}
+	go csrApprover.Run(certificates.YurtCSRApproverThreadiness, ctx.Stop)
+
 	return nil, true, nil
 }

@@ -19,9 +19,10 @@ package network
 import (
 	"strings"
 
-	"k8s.io/klog"
-	"k8s.io/kubernetes/pkg/util/iptables"
+	"k8s.io/klog/v2"
 	"k8s.io/utils/exec"
+
+	"github.com/openyurtio/openyurt/pkg/util/iptables"
 )
 
 type iptablesRule struct {
@@ -79,8 +80,17 @@ func (im *IptablesManager) EnsureIptablesRules() error {
 		_, err := im.iptables.EnsureRule(rule.pos, rule.table, rule.chain, rule.args...)
 		if err != nil {
 			klog.Errorf("could not ensure iptables rule(%s -t %s %s %s), %v", rule.pos, rule.table, rule.chain, strings.Join(rule.args, ","), err)
-			return err
+			continue
 		}
 	}
 	return nil
+}
+
+func (im *IptablesManager) CleanUpIptablesRules() {
+	for _, rule := range im.rules {
+		err := im.iptables.DeleteRule(rule.table, rule.chain, rule.args...)
+		if err != nil {
+			klog.Errorf("failed to delete iptables rule(%s -t %s %s %s), %v", rule.pos, rule.table, rule.chain, strings.Join(rule.args, " "), err)
+		}
+	}
 }

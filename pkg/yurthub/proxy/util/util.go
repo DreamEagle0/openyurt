@@ -22,9 +22,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/openyurtio/openyurt/pkg/yurthub/metrics"
-	"github.com/openyurtio/openyurt/pkg/yurthub/util"
-
 	"k8s.io/apimachinery/pkg/api/errors"
 	metainternalversion "k8s.io/apimachinery/pkg/apis/meta/internalversion"
 	metainternalversionscheme "k8s.io/apimachinery/pkg/apis/meta/internalversion/scheme"
@@ -32,7 +29,10 @@ import (
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
 	apirequest "k8s.io/apiserver/pkg/endpoints/request"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
+
+	"github.com/openyurtio/openyurt/pkg/yurthub/metrics"
+	"github.com/openyurtio/openyurt/pkg/yurthub/util"
 )
 
 const (
@@ -61,14 +61,10 @@ func WithRequestContentType(handler http.Handler) http.Handler {
 					contentType = parts[0]
 				}
 
-				if len(contentType) == 0 {
-					klog.Errorf("no accept content type for request: %s", util.ReqString(req))
-					util.Err(errors.NewBadRequest("no accept content type is set."), w, req)
-					return
+				if len(contentType) != 0 {
+					ctx = util.WithReqContentType(ctx, contentType)
+					req = req.WithContext(ctx)
 				}
-
-				ctx = util.WithReqContentType(ctx, contentType)
-				req = req.WithContext(ctx)
 			}
 		}
 
@@ -174,6 +170,7 @@ type wrapperResponseWriter struct {
 	http.ResponseWriter
 	http.Flusher
 	http.CloseNotifier
+	http.Hijacker
 	statusCode int
 }
 
@@ -188,10 +185,16 @@ func newWrapperResponseWriter(w http.ResponseWriter) *wrapperResponseWriter {
 		klog.Error("can not get http.Flusher")
 	}
 
+	hijacker, ok := w.(http.Hijacker)
+	if !ok {
+		klog.Error("can not get http.Hijacker")
+	}
+
 	return &wrapperResponseWriter{
 		ResponseWriter: w,
 		Flusher:        flusher,
 		CloseNotifier:  cn,
+		Hijacker:       hijacker,
 	}
 }
 

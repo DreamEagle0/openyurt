@@ -22,12 +22,14 @@ import (
 	"net/url"
 	"sync"
 
+	"k8s.io/klog/v2"
+
 	"github.com/openyurtio/openyurt/pkg/yurthub/cachemanager"
 	"github.com/openyurtio/openyurt/pkg/yurthub/certificate/interfaces"
+	"github.com/openyurtio/openyurt/pkg/yurthub/filter"
 	"github.com/openyurtio/openyurt/pkg/yurthub/healthchecker"
 	"github.com/openyurtio/openyurt/pkg/yurthub/transport"
 	"github.com/openyurtio/openyurt/pkg/yurthub/util"
-	"k8s.io/klog"
 )
 
 type loadBalancerAlgo interface {
@@ -127,10 +129,11 @@ func NewLoadBalancer(
 	transportMgr transport.Interface,
 	healthChecker healthchecker.HealthChecker,
 	certManager interfaces.YurtCertificateManager,
+	filterChain filter.Interface,
 	stopCh <-chan struct{}) (LoadBalancer, error) {
 	backends := make([]*RemoteProxy, 0, len(remoteServers))
 	for i := range remoteServers {
-		b, err := NewRemoteProxy(remoteServers[i], cacheMgr, transportMgr, healthChecker, stopCh)
+		b, err := NewRemoteProxy(remoteServers[i], cacheMgr, transportMgr, healthChecker, filterChain, stopCh)
 		if err != nil {
 			klog.Errorf("could not new proxy backend(%s), %v", remoteServers[i].String(), err)
 			continue
@@ -174,13 +177,14 @@ func (lb *loadBalancer) IsHealthy() bool {
 }
 
 func (lb *loadBalancer) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
-	b := lb.algo.PickOne()
-	if b == nil {
+	// pick a remote proxy based on the load balancing algorithm.
+	rp := lb.algo.PickOne()
+	if rp == nil {
 		// exceptional case
 		klog.Errorf("could not pick one healthy backends by %s for request %s", lb.algo.Name(), util.ReqString(req))
 		http.Error(rw, "could not pick one healthy backends, try again to go through local proxy.", http.StatusInternalServerError)
 		return
 	}
-	klog.V(3).Infof("picked backend %s by %s for request %s", b.Name(), lb.algo.Name(), util.ReqString(req))
-	b.ServeHTTP(rw, req)
+	klog.V(3).Infof("picked backend %s by %s for request %s", rp.Name(), lb.algo.Name(), util.ReqString(req))
+	rp.ServeHTTP(rw, req)
 }

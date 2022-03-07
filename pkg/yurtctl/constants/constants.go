@@ -16,10 +16,19 @@ limitations under the License.
 
 package constants
 
-const (
-	// AnnotationAutonomy is used to identify if a node is automous
-	AnnotationAutonomy = "node.beta.alibabacloud.com/autonomy"
+import (
+	"k8s.io/apimachinery/pkg/util/version"
 
+	"github.com/openyurtio/openyurt/pkg/projectinfo"
+)
+
+var (
+	// AnnotationAutonomy is used to identify if a node is autonomous
+	AnnotationAutonomy    = projectinfo.GetAutonomyAnnotation()
+	MinimumKubeletVersion = version.MustParseSemantic("v1.17.0")
+)
+
+const (
 	YurtctlLockConfigMapName = "yurtctl-lock"
 
 	YurttunnelServerComponentName   = "yurt-tunnel-server"
@@ -28,6 +37,79 @@ const (
 	YurttunnelServerCmName          = "yurt-tunnel-server-cfg"
 	YurttunnelAgentComponentName    = "yurt-tunnel-agent"
 	YurttunnelNamespace             = "kube-system"
+
+	SysctlK8sConfig          = "/etc/sysctl.d/k8s.conf"
+	KubeletConfigureDir      = "/etc/kubernetes"
+	KubeletWorkdir           = "/var/lib/kubelet"
+	YurtHubWorkdir           = "/var/lib/yurthub"
+	YurttunnelAgentWorkdir   = "/var/lib/yurttunnel-agent"
+	YurttunnelServerWorkdir  = "/var/lib/yurttunnel-server"
+	KubeCniDir               = "/opt/cni/bin"
+	KubeCniVersion           = "v0.8.0"
+	KubeletServiceFilepath   = "/etc/systemd/system/kubelet.service"
+	KubeletServiceConfPath   = "/etc/systemd/system/kubelet.service.d/10-kubeadm.conf"
+	YurthubStaticPodFileName = "yurthub.yaml"
+	PauseImagePath           = "registry.cn-hangzhou.aliyuncs.com/google_containers/pause:3.2"
+
+	CniUrlFormat                    = "https://aliacs-edge-k8s-cn-hangzhou.oss-cn-hangzhou.aliyuncs.com/public/pkg/openyurt/cni/%s/cni-plugins-linux-%s-%s.tgz"
+	DefaultKubernetesResourceServer = "dl.k8s.io"
+	KubeUrlFormat                   = "https://%s/%s/kubernetes-node-linux-%s.tar.gz"
+	TmpDownloadDir                  = "/tmp"
+	FlannelIntallFile               = "https://aliacs-edge-k8s-cn-hangzhou.oss-cn-hangzhou.aliyuncs.com/public/pkg/openyurt/flannel.yaml"
+
+	EdgeNode  = "edge"
+	CloudNode = "cloud"
+
+	DefaultOpenYurtImageRegistry = "registry.cn-hangzhou.aliyuncs.com/openyurt"
+	DefaultOpenYurtVersion       = "latest"
+	YurtControllerManager        = "yurt-controller-manager"
+	YurtTunnelServer             = "yurt-tunnel-server"
+	YurtTunnelAgent              = "yurt-tunnel-agent"
+	Yurthub                      = "yurthub"
+	YurtAppManager               = "yurt-app-manager"
+	YurtAppManagerNamespace      = "kube-system"
+	DirMode                      = 0755
+	KubeletServiceContent        = `
+[Unit]
+Description=kubelet: The Kubernetes Node Agent
+Documentation=http://kubernetes.io/docs/
+
+[Service]
+ExecStartPre=/sbin/swapoff -a
+ExecStart=/usr/bin/kubelet
+Restart=always
+StartLimitInterval=0
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target`
+
+	KubeletUnitConfig = `
+[Service]
+Environment="KUBELET_KUBECONFIG_ARGS=--kubeconfig=/etc/kubernetes/kubelet.conf"
+Environment="KUBELET_CONFIG_ARGS=--config=/var/lib/kubelet/config.yaml"
+EnvironmentFile=-/var/lib/kubelet/kubeadm-flags.env
+EnvironmentFile=-/etc/default/kubelet
+ExecStart=
+ExecStart=/usr/bin/kubelet $KUBELET_KUBECONFIG_ARGS $KUBELET_CONFIG_ARGS $KUBELET_KUBEADM_ARGS $KUBELET_EXTRA_ARGS
+`
+
+	KubeletConfForNode = `
+apiVersion: v1
+clusters:
+- cluster:
+    server: http://127.0.0.1:10261
+  name: default-cluster
+contexts:
+- context:
+    cluster: default-cluster
+    namespace: default
+    user: default-auth
+  name: default-context
+current-context: default-context
+kind: Config
+preferences: {}
+`
 
 	YurtControllerManagerServiceAccount = `
 apiVersion: v1
@@ -108,6 +190,28 @@ rules:
   verbs:
   - list
   - watch
+- apiGroups:
+    - certificates.k8s.io
+  resources:
+    - certificatesigningrequests
+  verbs:
+    - get
+    - list
+    - watch
+- apiGroups:
+    - certificates.k8s.io
+  resources:
+    - certificatesigningrequests/approval
+  verbs:
+    - update
+- apiGroups:
+    - certificates.k8s.io
+  resourceNames:
+    - kubernetes.io/legacy-unknown
+  resources:
+    - signers
+  verbs:
+    - approve
 `
 	YurtControllerManagerClusterRoleBinding = `
 apiVersion: rbac.authorization.k8s.io/v1
@@ -162,8 +266,9 @@ spec:
         command:
         - yurt-controller-manager	
 `
-	// ConvertServantJobTemplate defines the yurtctl convert servant job in yaml format
-	ConvertServantJobTemplate = `
+
+	// DisableNodeControllerJobTemplate defines the node-controller disable job in yaml format
+	DisableNodeControllerJobTemplate = `
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -176,39 +281,20 @@ spec:
       hostNetwork: true
       restartPolicy: OnFailure
       nodeName: {{.nodeName}}
-      volumes:
-      - name: host-var-tmp
-        hostPath:
-          path: /var/tmp
-          type: Directory
       containers:
-      - name: yurtctl-servant
-        image: {{.yurtctl_servant_image}}
-        imagePullPolicy: Always
+      - name: yurtctl-disable-node-controller
+        image: {{.node_servant_image}}
+        imagePullPolicy: IfNotPresent
         command:
         - /bin/sh
         - -c
         args:
-        - "cp /usr/local/bin/yurtctl /tmp && nsenter -t 1 -m -u -n -i -- /var/tmp/yurtctl convert edgenode --yurthub-image {{.yurthub_image}} {{if .yurthub_healthcheck_timeout}}--yurthub-healthcheck-timeout {{.yurthub_healthcheck_timeout}} {{end}}--join-token {{.joinToken}} && rm /tmp/yurtctl"
+        - "nsenter -t 1 -m -u -n -i -- sed -i 's/--controllers=/--controllers=-nodelifecycle,/g' {{.pod_manifest_path}}/kube-controller-manager.yaml"
         securityContext:
           privileged: true
-        volumeMounts:
-        - mountPath: /tmp
-          name: host-var-tmp
-        env:
-        - name: NODE_NAME
-          valueFrom:
-            fieldRef:
-              fieldPath: spec.nodeName
-        - name: STATIC_POD_PATH
-          value: {{.pod_manifest_path}}
-          {{if  .kubeadm_conf_path }}
-        - name: KUBELET_SVC
-          value: {{.kubeadm_conf_path}}
-          {{end}}
 `
-	// RevertServantJobTemplate defines the yurtctl revert servant job in yaml format
-	RevertServantJobTemplate = `
+	// EnableNodeControllerJobTemplate defines the node-controller enable job in yaml format
+	EnableNodeControllerJobTemplate = `
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -221,35 +307,16 @@ spec:
       hostNetwork: true
       restartPolicy: OnFailure
       nodeName: {{.nodeName}}
-      volumes:
-      - name: host-var-tmp
-        hostPath:
-          path: /var/tmp
-          type: Directory
       containers:
-      - name: yurtctl-servant
-        image: {{.yurtctl_servant_image}}
-        imagePullPolicy: Always
+      - name: yurtctl-enable-node-controller
+        image: {{.node_servant_image}}
+        imagePullPolicy: IfNotPresent
         command:
         - /bin/sh
         - -c
         args:
-        - "cp /usr/local/bin/yurtctl /tmp && nsenter -t 1 -m -u -n -i -- /var/tmp/yurtctl revert edgenode && rm /tmp/yurtctl"
+        - "nsenter -t 1 -m -u -n -i -- sed -i 's/--controllers=-nodelifecycle,/--controllers=/g' {{.pod_manifest_path}}/kube-controller-manager.yaml"
         securityContext:
           privileged: true
-        volumeMounts:
-        - mountPath: /tmp
-          name: host-var-tmp
-        env:
-        - name: NODE_NAME
-          valueFrom:
-            fieldRef:
-              fieldPath: spec.nodeName
-        - name: STATIC_POD_PATH
-          value: {{.pod_manifest_path}}
-          {{if  .kubeadm_conf_path }}
-        - name: KUBELET_SVC
-          value: {{.kubeadm_conf_path}}
-          {{end}}
 `
 )

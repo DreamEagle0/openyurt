@@ -1,3 +1,5 @@
+#!/usr/bin/env bash
+
 # Copyright 2020 The OpenYurt Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,14 +14,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-#!/usr/bin/env bash
-
 set -x
 
 YURT_IMAGE_DIR=${YURT_OUTPUT_DIR}/images
 YURTCTL_SERVANT_DIR=${YURT_ROOT}/config/yurtctl-servant
-DOCKER_BUILD_BASE_IDR=$YURT_ROOT/dockerbuild
-YURT_BUILD_IMAGE="golang:1.13-alpine"
+DOCKER_BUILD_BASE_DIR=$YURT_ROOT/dockerbuild
+YURT_BUILD_IMAGE="golang:1.16-alpine"
 #REPO="openyurt"
 #TAG="v0.2.0"
 
@@ -27,6 +27,7 @@ readonly -a YURT_BIN_TARGETS=(
     yurthub
     yurt-controller-manager
     yurtctl
+    yurt-node-servant
     yurt-tunnel-server
     yurt-tunnel-agent
 )
@@ -39,10 +40,25 @@ readonly -a SUPPORTED_ARCH=(
 
 readonly SUPPORTED_OS=linux
 
-readonly -a bin_targets=(${WHAT:-${YURT_BIN_TARGETS[@]}})
+readonly -a bin_targets=(${WHAT[@]:-${YURT_BIN_TARGETS[@]}})
 readonly -a bin_targets_process_servant=("${bin_targets[@]/yurtctl-servant/yurtctl}")
-readonly -a target_arch=(${ARCH:-${SUPPORTED_ARCH[@]}})
+readonly -a target_arch=(${ARCH[@]:-${SUPPORTED_ARCH[@]}})
 readonly region=${REGION:-us}
+
+# Parameters
+# $1: component name
+# $2: arch
+function get_image_name {
+    # If ${GIT_COMMIT} is not at a tag, add commit to the image tag.
+    if [[ -z $(git tag --points-at ${GIT_COMMIT}) ]]; then
+        yurt_component_image="${REPO}/$1:${TAG}-$2-$(echo ${GIT_COMMIT} | cut -c 1-7)"
+    else
+        yurt_component_image="${REPO}/$1:${TAG}-$2"
+    fi    
+
+    echo ${yurt_component_image}
+}
+
 
 function build_multi_arch_binaries() {
     local docker_run_opts=(
@@ -61,6 +77,10 @@ function build_multi_arch_binaries() {
     )
     # use goproxy if build from inside mainland China
     [[ $region == "cn" ]] && docker_run_opts+=("--env GOPROXY=https://goproxy.cn")
+
+    # use proxy if set
+    [[ -n ${http_proxy+x} ]] && docker_run_opts+=("--env http_proxy=${http_proxy}")
+    [[ -n ${https_proxy+x} ]] && docker_run_opts+=("--env https_proxy=${https_proxy}")
 
     local docker_run_cmd=(
         "/bin/sh"
@@ -86,15 +106,13 @@ function build_docker_image() {
            local binary_name=$(get_output_name $binary)
            local binary_path=${YURT_LOCAL_BIN_DIR}/${SUPPORTED_OS}/${arch}/${binary_name}
            if [ -f ${binary_path} ]; then
-               local docker_build_path=${DOCKER_BUILD_BASE_IDR}/${SUPPORTED_OS}/${arch}
+               local docker_build_path=${DOCKER_BUILD_BASE_DIR}/${SUPPORTED_OS}/${arch}
                local docker_file_path=${docker_build_path}/Dockerfile.${binary_name}-${arch}
                mkdir -p ${docker_build_path}
-
-               local yurt_component_name
+               local yurt_component_name=$(get_component_name $binary_name)
                local base_image
                if [[ ${binary} =~ yurtctl ]]
                then
-                 yurt_component_name="yurtctl-servant"
                  case $arch in
                   amd64)
                       base_image="amd64/alpine:3.9"
@@ -113,8 +131,30 @@ function build_docker_image() {
 FROM ${base_image}
 ADD ${binary_name} /usr/local/bin/yurtctl
 EOF
+               elif [[ ${binary} =~ yurt-node-servant ]];
+               then
+                 case $arch in
+                  amd64)
+                      base_image="amd64/alpine:3.9"
+                      ;;
+                  arm64)
+                      base_image="arm64v8/alpine:3.9"
+                      ;;
+                  arm)
+                      base_image="arm32v7/alpine:3.9"
+                      ;;
+                  *)
+                      echo unknown arch $arch
+                      exit 1
+                 esac
+                 ln ./hack/lib/node-servant-entry.sh "${docker_build_path}/entry.sh"
+                 cat << EOF > $docker_file_path
+FROM ${base_image}
+ADD entry.sh /usr/local/bin/entry.sh
+RUN chmod +x /usr/local/bin/entry.sh
+ADD ${binary_name} /usr/local/bin/node-servant
+EOF
                else
-                 yurt_component_name=${binary_name}
                  base_image="k8s.gcr.io/debian-iptables-${arch}:v11.0.2"
                  cat <<EOF > "${docker_file_path}"
 FROM ${base_image}
@@ -123,11 +163,11 @@ ENTRYPOINT ["/usr/local/bin/${binary_name}"]
 EOF
                fi
 
-               yurt_component_image="${REPO}/${yurt_component_name}:${TAG}-${arch}"
+               yurt_component_image=$(get_image_name ${yurt_component_name} ${arch})
                ln "${binary_path}" "${docker_build_path}/${binary_name}"
                docker build --no-cache -t "${yurt_component_image}" -f "${docker_file_path}" ${docker_build_path}
+               echo ${yurt_component_image} >> ${DOCKER_BUILD_BASE_DIR}/images.list
                docker save ${yurt_component_image} > ${YURT_IMAGE_DIR}/${yurt_component_name}-${SUPPORTED_OS}-${arch}.tar
-               rm -rf ${docker_build_path}
             fi
         done
     done
@@ -136,11 +176,15 @@ EOF
 build_images() {
     # Always clean first
     rm -Rf ${YURT_OUTPUT_DIR}
-    rm -Rf ${DOCKER_BUILD_BASE_IDR}
+    rm -Rf ${DOCKER_BUILD_BASE_DIR}
     mkdir -p ${YURT_LOCAL_BIN_DIR}
     mkdir -p ${YURT_IMAGE_DIR}
-    mkdir -p ${DOCKER_BUILD_BASE_IDR}
+    mkdir -p ${DOCKER_BUILD_BASE_DIR}
 
     build_multi_arch_binaries
     build_docker_image
+}
+
+push_images() {
+    cat ${DOCKER_BUILD_BASE_DIR}/images.list | xargs -I % sh -c 'echo pushing %; docker push %; echo'
 }

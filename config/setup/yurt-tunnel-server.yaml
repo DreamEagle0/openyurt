@@ -6,32 +6,36 @@ metadata:
   name: yurt-tunnel-server
 rules:
 - apiGroups:
-  - certificates.k8s.io
+    - certificates.k8s.io
   resources:
-  - certificatesigningrequests
-  - certificatesigningrequests/approval
+    - certificatesigningrequests
   verbs:
-  - create
-  - get
-  - list
-  - watch
-  - delete
-  - update
-  - patch
+    - create
+    - get
+    - list
+    - watch
 - apiGroups:
-  - certificates.k8s.io
+    - certificates.k8s.io
   resources:
-  - signers
-  resourceNames:
-  - "kubernetes.io/legacy-unknown"
+    - certificatesigningrequests/approval
   verbs:
-  - approve
+    - update
+- apiGroups:
+    - certificates.k8s.io
+  resourceNames:
+    - kubernetes.io/legacy-unknown
+  resources:
+    - signers
+  verbs:
+    - approve
 - apiGroups:
   - ""
   resources:
   - endpoints
   verbs:
   - get
+  - list
+  - watch
 - apiGroups:
   - ""
   resources:
@@ -47,6 +51,7 @@ rules:
   - get
   - list
   - watch
+  - update
 - apiGroups:
   - ""
   resources:
@@ -128,6 +133,9 @@ metadata:
   name: yurt-tunnel-server-cfg
   namespace: kube-system
 data:
+  localhost-proxy-ports: "10266, 10267"
+  http-proxy-ports: ""
+  https-proxy-ports: ""
   dnat-ports-pair: ""
 ---
 apiVersion: apps/v1
@@ -164,7 +172,7 @@ spec:
       containers:
       - name: yurt-tunnel-server
         image: openyurt/yurt-tunnel-server:latest
-        imagePullPolicy: Always
+        imagePullPolicy: IfNotPresent
         command:
         - yurt-tunnel-server
         args:

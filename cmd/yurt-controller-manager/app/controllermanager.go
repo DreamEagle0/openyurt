@@ -30,12 +30,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/openyurtio/openyurt/cmd/yurt-controller-manager/app/config"
-	"github.com/openyurtio/openyurt/cmd/yurt-controller-manager/app/options"
-	yurtctrlmgrconfig "github.com/openyurtio/openyurt/pkg/controller/apis/config"
-	"github.com/openyurtio/openyurt/pkg/projectinfo"
 	"github.com/spf13/cobra"
-
+	"github.com/spf13/pflag"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -43,22 +39,28 @@ import (
 	"k8s.io/apiserver/pkg/server/healthz"
 	"k8s.io/apiserver/pkg/server/mux"
 	serveroptions "k8s.io/apiserver/pkg/server/options"
-	"k8s.io/apiserver/pkg/util/term"
 	"k8s.io/client-go/informers"
+	restclient "k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/leaderelection"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 	cliflag "k8s.io/component-base/cli/flag"
 	"k8s.io/component-base/cli/globalflag"
-	"k8s.io/component-base/version"
-	"k8s.io/klog"
-	genericcontrollermanager "k8s.io/kubernetes/cmd/controller-manager/app"
-	"k8s.io/kubernetes/pkg/controller"
-	utilflag "k8s.io/kubernetes/pkg/util/flag"
+	"k8s.io/component-base/term"
+	genericcontrollermanager "k8s.io/controller-manager/app"
+	"k8s.io/controller-manager/pkg/clientbuilder"
+	"k8s.io/klog/v2"
+
+	"github.com/openyurtio/openyurt/cmd/yurt-controller-manager/app/config"
+	"github.com/openyurtio/openyurt/cmd/yurt-controller-manager/app/options"
+	yurtctrlmgrconfig "github.com/openyurtio/openyurt/pkg/controller/apis/config"
+	"github.com/openyurtio/openyurt/pkg/projectinfo"
 )
 
 const (
 	// ControllerStartJitter used when starting controller managers
 	ControllerStartJitter = 1.0
+
+	YurtControllerManager = "yurt-controller-manager"
 )
 
 // NewControllerManagerCommand creates a *cobra.Command object with default parameters
@@ -69,13 +71,20 @@ func NewControllerManagerCommand() *cobra.Command {
 	}
 
 	cmd := &cobra.Command{
-		Use: "yurt-controller-manager",
+		Use: YurtControllerManager,
 		Long: `The yurt controller manager is a daemon that embeds
 the core control loops shipped with openyurt. In applications of robotics and
 automation, a control loop is a non-terminating loop that regulates the state of
 the system. In openyurt, a controller is a control loop that watches the shared
 state of the cluster through the apiserver and makes changes attempting to move the
 current state towards the desired state. now only nodelifecycle controller is present.`,
+		PersistentPreRunE: func(*cobra.Command, []string) error {
+			// silence client-go warnings.
+			// kube-controller-manager generically watches APIs (including deprecated ones),
+			// and CI ensures it works properly against matching kube-apiserver versions.
+			restclient.SetDefaultWarningHandler(restclient.NoWarnings{})
+			return nil
+		},
 		Run: func(cmd *cobra.Command, args []string) {
 			//verflag.PrintAndExitIfRequested()
 			if s.Version {
@@ -84,7 +93,7 @@ current state towards the desired state. now only nodelifecycle controller is pr
 			}
 			fmt.Printf("%s version: %#v\n", projectinfo.GetYurtControllerManagerName(), projectinfo.Get())
 
-			utilflag.PrintFlags(cmd.Flags())
+			PrintFlags(cmd.Flags())
 
 			c, err := s.Config(KnownControllers(), ControllersDisabledByDefault.List())
 			if err != nil {
@@ -96,6 +105,14 @@ current state towards the desired state. now only nodelifecycle controller is pr
 				fmt.Fprintf(os.Stderr, "%v\n", err)
 				os.Exit(1)
 			}
+		},
+		Args: func(cmd *cobra.Command, args []string) error {
+			for _, arg := range args {
+				if len(arg) > 0 {
+					return fmt.Errorf("%q does not take any arguments, got %q", cmd.CommandPath(), args)
+				}
+			}
+			return nil
 		},
 	}
 
@@ -138,7 +155,7 @@ func ResyncPeriod(c *config.CompletedConfig) func() time.Duration {
 // Run runs the KubeControllerManagerOptions.  This should never exit.
 func Run(c *config.CompletedConfig, stopCh <-chan struct{}) error {
 	// To help debugging, immediately log version
-	klog.Infof("Version: %+v", version.Get())
+	//klog.Infof("Version: %+v", version.Get())
 
 	// Setup any healthz checks we will want to use.
 	var checks []healthz.HealthChecker
@@ -149,13 +166,13 @@ func Run(c *config.CompletedConfig, stopCh <-chan struct{}) error {
 	}
 
 	// Start the controller manager HTTP server
-	// unsecuredMux is the handler for these controller *after* authn/authz filters have been applied
+	// unsecuredMux is the handler for these controllers *after* authn/authz filters have been applied
 	var unsecuredMux *mux.PathRecorderMux
 	unsecuredMux = genericcontrollermanager.NewBaseHandler(&c.ComponentConfig.Generic.Debugging, checks...)
 	insecureSuperuserAuthn := apiserver.AuthenticationInfo{Authenticator: &apiserver.InsecureSuperuser{}}
 	handler := genericcontrollermanager.BuildHandlerChain(unsecuredMux, nil, &insecureSuperuserAuthn)
 	addr := net.JoinHostPort(c.ComponentConfig.Generic.Address, fmt.Sprintf("%d", c.ComponentConfig.Generic.Port))
-	listener, _, err := serveroptions.CreateListener("tcp", addr)
+	listener, _, err := serveroptions.CreateListener("tcp", addr, net.ListenConfig{})
 	if err != nil {
 		klog.Fatalf("error create listner: %v", err)
 	}
@@ -171,10 +188,10 @@ func Run(c *config.CompletedConfig, stopCh <-chan struct{}) error {
 	}
 
 	run := func(ctx context.Context) {
-		rootClientBuilder := controller.SimpleControllerClientBuilder{
+		rootClientBuilder := clientbuilder.SimpleControllerClientBuilder{
 			ClientConfig: c.Kubeconfig,
 		}
-		var clientBuilder controller.ControllerClientBuilder
+		var clientBuilder clientbuilder.ControllerClientBuilder
 
 		clientBuilder = rootClientBuilder
 		controllerContext, err := CreateControllerContext(c, rootClientBuilder, clientBuilder, ctx.Done())
@@ -206,7 +223,7 @@ func Run(c *config.CompletedConfig, stopCh <-chan struct{}) error {
 	id = id + "_" + string(uuid.NewUUID())
 	rl, err := resourcelock.New(c.ComponentConfig.Generic.LeaderElection.ResourceLock,
 		"kube-system",
-		"yurt-controller-manager",
+		YurtControllerManager,
 		c.LeaderElectionClient.CoreV1(),
 		c.LeaderElectionClient.CoordinationV1(),
 		resourcelock.ResourceLockConfig{
@@ -229,7 +246,7 @@ func Run(c *config.CompletedConfig, stopCh <-chan struct{}) error {
 			},
 		},
 		WatchDog: electionChecker,
-		Name:     "yurt-controller-manager",
+		Name:     YurtControllerManager,
 	})
 	panic("unreachable")
 }
@@ -237,7 +254,7 @@ func Run(c *config.CompletedConfig, stopCh <-chan struct{}) error {
 // ControllerContext is an context for all controllers
 type ControllerContext struct {
 	// ClientBuilder will provide a client for this controller to use
-	ClientBuilder controller.ControllerClientBuilder
+	ClientBuilder clientbuilder.ControllerClientBuilder
 
 	// InformerFactory gives access to informers for the controller.
 	InformerFactory informers.SharedInformerFactory
@@ -287,6 +304,7 @@ var ControllersDisabledByDefault = sets.NewString()
 func NewControllerInitializers() map[string]InitFunc {
 	controllers := map[string]InitFunc{}
 	controllers["nodelifecycle"] = startNodeLifecycleController
+	controllers["yurtcsrapprover"] = startYurtCSRApproverController
 
 	return controllers
 }
@@ -294,7 +312,7 @@ func NewControllerInitializers() map[string]InitFunc {
 // CreateControllerContext creates a context struct containing references to resources needed by the
 // controllers such as the cloud provider and clientBuilder. rootClientBuilder is only used for
 // the shared-informers client and token controller.
-func CreateControllerContext(s *config.CompletedConfig, rootClientBuilder, clientBuilder controller.ControllerClientBuilder, stop <-chan struct{}) (ControllerContext, error) {
+func CreateControllerContext(s *config.CompletedConfig, rootClientBuilder, clientBuilder clientbuilder.ControllerClientBuilder, stop <-chan struct{}) (ControllerContext, error) {
 	versionedClient := rootClientBuilder.ClientOrDie("shared-informers")
 	sharedInformers := informers.NewSharedInformerFactory(versionedClient, ResyncPeriod(s)())
 
@@ -344,4 +362,11 @@ func StartControllers(ctx ControllerContext, controllers map[string]InitFunc, un
 	}
 
 	return nil
+}
+
+// PrintFlags logs the flags in the flagset
+func PrintFlags(flags *pflag.FlagSet) {
+	flags.VisitAll(func(flag *pflag.Flag) {
+		klog.V(1).Infof("FLAG: --%s=%q", flag.Name, flag.Value)
+	})
 }

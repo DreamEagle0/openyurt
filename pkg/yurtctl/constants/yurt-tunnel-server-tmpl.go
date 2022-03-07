@@ -26,32 +26,36 @@ metadata:
   name: yurt-tunnel-server
 rules:
 - apiGroups:
-  - certificates.k8s.io
+    - certificates.k8s.io
   resources:
-  - certificatesigningrequests
-  - certificatesigningrequests/approval
+    - certificatesigningrequests
   verbs:
-  - create
-  - get
-  - list
-  - watch
-  - delete
-  - update
-  - patch
+    - create
+    - get
+    - list
+    - watch
 - apiGroups:
-  - certificates.k8s.io
+    - certificates.k8s.io
   resources:
-  - signers
-  resourceNames:
-  - "kubernetes.io/legacy-unknown"
+    - certificatesigningrequests/approval
   verbs:
-  - approve
+    - update
+- apiGroups:
+    - certificates.k8s.io
+  resourceNames:
+    - kubernetes.io/legacy-unknown
+  resources:
+    - signers
+  verbs:
+    - approve
 - apiGroups:
   - ""
   resources:
   - endpoints
   verbs:
   - get
+  - list
+  - watch
 - apiGroups:
   - ""
   resources:
@@ -67,6 +71,7 @@ rules:
   - get
   - list
   - watch
+  - update
 - apiGroups:
   - ""
   resources:
@@ -123,6 +128,7 @@ spec:
     name: https
   - port: 10262
     targetPort: 10262
+    nodePort: 31008
     name: tcp
   selector:
     k8s-app: yurt-tunnel-server
@@ -154,6 +160,9 @@ metadata:
   name: yurt-tunnel-server-cfg
   namespace: kube-system
 data:
+  localhost-proxy-ports: "10266, 10267"
+  http-proxy-ports: ""
+  https-proxy-ports: ""
   dnat-ports-pair: ""
 `
 	YurttunnelServerDeployment = `
@@ -185,19 +194,22 @@ spec:
       tolerations:
       - operator: "Exists"
       nodeSelector:
-        beta.kubernetes.io/arch: amd64
+        beta.kubernetes.io/arch: {{.arch}}
         beta.kubernetes.io/os: linux
         {{.edgeWorkerLabel}}: "false"
       containers:
       - name: yurt-tunnel-server
         image: {{.image}} 
-        imagePullPolicy: Always
+        imagePullPolicy: IfNotPresent
         command:
         - yurt-tunnel-server
         args:
         - --bind-address=$(NODE_IP)
         - --insecure-bind-address=$(NODE_IP)
         - --server-count=1
+          {{if .certIP }}
+        - --cert-ips={{.certIP}}
+          {{end}}
         env:
         - name: NODE_IP
           valueFrom:

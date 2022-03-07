@@ -1,3 +1,5 @@
+#!/usr/bin/env bash
+
 # Copyright 2020 The OpenYurt Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -11,8 +13,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
-#!/usr/bin/env bash
 
 set -x
 
@@ -47,4 +47,20 @@ canonicalize_target() {
 # host_platform returns the host platform determined by golang
 host_platform() {
   echo "$(go env GOHOSTOS)/$(go env GOHOSTARCH)"
+}
+
+# Parameters
+# $1: binary_name
+get_component_name() {
+  local yurt_component_name
+  if [[ $1 =~ yurtctl ]]
+  then
+    yurt_component_name="yurtctl-servant"
+  elif [[ $1 =~ yurt-node-servant ]];
+  then
+    yurt_component_name="node-servant"
+  else
+    yurt_component_name=$1
+  fi
+  echo $yurt_component_name
 }

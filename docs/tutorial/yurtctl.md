@@ -19,7 +19,7 @@ $ _output/bin/yurtctl convert --provider minikube
 convert.go:148] mark minikube as the edge-node
 convert.go:178] deploy the yurt controller manager
 convert.go:190] deploying the yurt-hub and resetting the kubelet service...
-util.go:137] servant job(yurtctl-servant-convert-minikube) has succeeded
+util.go:137] servant job(node-servant-convert-minikube) has succeeded
 ```
 
 3. yurt controller manager and yurthub Pods will be up and running in one minute. Let us verify them:
@@ -32,18 +32,13 @@ NAME                READY   STATUS    RESTARTS   AGE
 yurt-hub-minikube   1/1     Running   0          23h
 ```
 
-4. Next, we mark desired edge nodes as autonomous (only pods running on the autonomous edge nodes will be prevented from being evicted during disconnection):
-```bash
-$ _output/bin/yurtctl markautonomous
-I0602 14:11:08.610222   89160 markautonomous.go:149] mark minikube-m02 as autonomous
-```
-
-5. As the minikube cluster only contains one node, the node will be marked as an autonomous edge node. Let us verify this by inspecting the node's labels and annotations:
+4. `yurtctl` will mark all edge nodes as autonomous (only pods running on the autonomous edge nodes will be prevented from being evicted during disconnection) by default.
+As the minikube cluster only contains one node, the node will be marked as an autonomous edge node. Let us verify this by inspecting the node's labels and annotations:
 ```
 $ kubectl describe node | grep Labels -A 5
 Labels:      openyurt.io/is-edge-worker=true
 $ kubectl describe node | grep Annotations -A 5
-Annotations: node.beta.alibabacloud.com/autonomy: true
+Annotations: node.beta.openyurt.io/autonomy: true
 ```
 
 By now, the OpenYurt cluster is ready. Users will not notice any differences compared to native Kubernetes when operating the cluster.
@@ -128,15 +123,17 @@ us-west-1.192.168.0.87   Ready    <none>   19h   v1.14.8-aliyun.1
 us-west-1.192.168.0.88   Ready    <none>   19h   v1.14.8-aliyun.1
 ```
 
-2. You can convert only one node to edge node(i.e., minikube-m02) by using this command:
+2. You can convert only one node to non-edge node(i.e., us-west-1.192.168.0.87) by using this command:
 ```bash
 $ _output/bin/yurtctl convert --provider ack --cloud-nodes us-west-1.192.168.0.87
 I0529 11:21:05.835781    9231 convert.go:145] mark us-west-1.192.168.0.87 as the cloud-node
 I0529 11:21:05.861064    9231 convert.go:153] mark us-west-1.192.168.0.88 as the edge-node
 I0529 11:21:05.951483    9231 convert.go:183] deploy the yurt controller manager
 I0529 11:21:05.974443    9231 convert.go:195] deploying the yurt-hub and resetting the kubelet service...
-I0529 11:21:26.075075    9231 util.go:147] servant job(yurtctl-servant-convert-us-west-1.192.168.0.88) has succeeded
+I0529 11:21:26.075075    9231 util.go:147] servant job(node-servant-convert-us-west-1.192.168.0.88) has succeeded
 ```
+
+Note: use "," to add more nodes (i.e., --cloud-nodes us-west-1.192.168.0.87,us-west-1.192.168.0.88).
 
 3. Node `us-west-1.192.168.0.87` will be marked as a non-edge node. You can verify this by inspecting its labels:
 ```bash
@@ -144,13 +141,8 @@ $ kubectl describe node us-west-1.192.168.0.87 | grep Labels
 Labels:             openyurt.io/is-edge-worker=false
 ```
 
-4. Same as before, we make desired edge nodes autonomous:
-```bash
-$ _output/bin/yurtctl markautonomous
-I0602 11:22:05.610222   89160 markautonomous.go:149] mark us-west-1.192.168.0.88 as autonomous
-```
-
-5. When the OpenYurt cluster contains cloud nodes, yurt controller manager will be deployed on the cloud node (in this case, the node `us-west-1.192.168.0.87`):
+4. When the OpenYurt cluster contains cloud nodes, yurt controller manager will be deployed on the cloud node (in this
+case, the node `us-west-1.192.168.0.87`):
 ```bash
 $ kubectl get pods -A -o=custom-columns='NAME:.metadata.name,NODE:.spec.nodeName'
 NAME                                               NODE
@@ -181,14 +173,71 @@ I0831 12:35:51.753830   77322 convert.go:251] the yurt-controller-manager is dep
 I0831 12:35:51.910440   77322 convert.go:270] yurt-tunnel-server is deployed
 I0831 12:35:51.999384   77322 convert.go:278] yurt-tunnel-agent is deployed
 I0831 12:35:51.999409   77322 convert.go:282] deploying the yurt-hub and resetting the kubelet service...
-I0831 12:36:22.109338   77322 util.go:173] servant job(yurtctl-servant-convert-minikube-m02) has succeeded
+I0831 12:36:22.109338   77322 util.go:173] servant job(node-servant-convert-minikube-m02) has succeeded
 I0831 12:36:22.109368   77322 convert.go:292] the yurt-hub is deployed
 ```
 
 To verify that the yurttunnel works as expected, please refer to
 the [yurttunnel tutorial](https://github.com/openyurtio/openyurt/blob/master/docs/tutorial/yurt-tunnel.md)
 
-## Set the path of configuration
+## Revert/Uninstall OpenYurt
+
+Using `yurtctl` to revert an OpenYurt cluster can be done by doing the following:
+```
+$ _output/bin/yurtctl revert
+revert.go:100] label openyurt.io/is-edge-worker is removed
+revert.go:110] yurt controller manager is removed
+revert.go:124] ServiceAccount node-controller is created
+util.go:137] servant job(node-servant-revert-minikube-m02) has succeeded
+revert.go:133] yurt-hub is removed, kubelet service is reset
+```
+Note that before performing the uninstall, please make sure all edge nodes are reachable from the apiserver.
+
+In addition, the path of the kubelet service configuration can be set by the option `--kubeadm-conf-path`,
+and the path of the directory on edge node containing static pod files can be set by the option `--pod-manifest-path`.
+
+## Create OpenYurt cluster
+`yurtctl init` will create an OpenYurt cluster, and the user doesn't need to do pre-work, such as install the runtime in advance or ensure that the swap partition of the node has been closed.
+
+Using `yurtctl` to create an OpenYurt cluster can be done by doing the following:
+```
+$ _output/bin/yurtctl init --apiserver-advertise-address 1.2.3.4 --openyurt-version v0.5.0 --passwd 1234
+```
+The `--apiserver-advertise-address` is the IP address of master, `--passwd` is ssh password of master, `--openyurt-version` is the the OpenYurt cluster version.
+In addition, and the OpenYurt cluster image registry can be set by the option `--image-registry`. If user want to get more help, please use `yurtctl init -h`.
+
+## Join Edge-Node/Cloud-Node to OpenYurt
+
+`yurtctl join` will automatically install the corresponding kubelet according to the cluster version, but the user needs to install the runtime in advance and ensure that the swap partition of the node has been closed.
+
+Using `yurtctl` to join an Edge-Node to OpenYurt cluster can be by doing the following:
+```
+$ _output/bin/yurtctl join 1.2.3.4:6443 --token=zffaj3.a5vjzf09qn9ft3gt --node-type=edge-node --discovery-token-unsafe-skip-ca-verification --v=5
+```
+
+Using `yurtctl` to join a Cloud-Node to OpenYurt cluster can be by doing the following:
+```
+$ _output/bin/yurtctl join 1.2.3.4:6443 --token=zffaj3.a5vjzf09qn9ft3gt --node-type=cloud-node --discovery-token-unsafe-skip-ca-verification --v=5
+```
+
+## Reset nodes of OpenYurt
+
+Using `yurtctl` to revert any changes made to this host by `yurtctl join` can be by doing the following:
+```
+$ _output/bin/yurtctl reset
+```
+
+## Note
+### Disable the default nodelifecycle controller
+`yurtctl convert`  will turn off the default nodelifecycle controller to allow the yurt-controller-mamanger to work properly.
+If kube-controller-manager is deployed as a static pod, yurtctl can modify the `kube-controller-manager.yaml`
+according the parameter `--pod-manifest-path` with default value `/etc/kubernetes/manifests`.
+It is also suitable for kube-controller-manager high-availability scenarios.
+
+But for kube-controller-manager deployed in other ways, the user needs to turn off the default nodelifecycle controller manually.
+Please refer to the [Disable the default nodelifecycle controller](https://github.com/openyurtio/openyurt/blob/master/docs/tutorial/manually-setup.md#disable-the-default-nodelifecycle-controller) section. In addition, when using `yurtctl revert`, if kube-controller-manager is not deployed through static file, the user also needs to restore manually.
+
+### Set the path of configuration
 Sometimes the configuration of the node may be different. Users can set the path of the kubelet service configuration
 by the option `--kubeadm-conf-path`, which is used by kubelet component to join the cluster on the edge node.
 ```
@@ -199,70 +248,6 @@ option `--pod-manifest-path`.
 ```
 $ _output/bin/yurtctl convert --pod-manifest-path /etc/kubernetes/manifests
 ```
-
-## Revert/Uninstall OpenYurt
-
-Using `yurtctl` to revert an OpenYurt cluster can be done by doing the following:
-```
-$ _output/bin/yurtctl revert
-revert.go:100] label openyurt.io/is-edge-worker is removed
-revert.go:110] yurt controller manager is removed
-revert.go:124] ServiceAccount node-controller is created
-util.go:137] servant job(yurtctl-servant-revert-minikube-m02) has succeeded
-revert.go:133] yurt-hub is removed, kubelet service is reset
-```
-Note that before performing the uninstall, please make sure all edge nodes are reachable from the apiserver.
-
-In addition, the path of the kubelet service configuration can be set by the option `--kubeadm-conf-path`,
-and the path of the directory on edge node containing static pod files can be set by the option `--pod-manifest-path`.
-
-## Subcommand
-### Convert a Kubernetes node to Yurt edge node
-
-You can use the subcommand `yurtctl convert edgenode` to convert a Kubernetes node to Yurt edge node separately.
-
-This command can convert the node locally or remotely. One or more nodes that need to be converted can be specified
-by the option `--edge-nodes`. If this option is not used, the local node will be converted.
-
-Convert the Kubernetes node n80 to an Yurt edge node:
-```
-$ _output/bin/yurtctl convert edgenode --edge-nodes n80
-I0209 11:03:30.101308   13729 edgenode.go:251] mark n80 as the edge-node
-I0209 11:03:30.136313   13729 edgenode.go:279] setting up yurthub on node
-I0209 11:03:30.137013   13729 edgenode.go:294] setting up yurthub apiserver addr
-I0209 11:03:30.137500   13729 edgenode.go:311] create the /etc/kubernetes/manifests/yurt-hub.yaml
-I0209 11:03:40.140073   13729 edgenode.go:403] yurt-hub healthz is OK
-I0209 11:03:40.140555   13729 edgenode.go:330] revised kubeconfig /var/lib/openyurt/kubelet.conf is generated
-I0209 11:03:40.141592   13729 edgenode.go:351] kubelet.service drop-in file is revised
-I0209 11:03:40.141634   13729 edgenode.go:354] systemctl daemon-reload
-I0209 11:03:40.403453   13729 edgenode.go:359] systemctl restart kubelet
-I0209 11:03:40.469911   13729 edgenode.go:364] kubelet has been restarted
-```
-You can verify this by inspecting its labels and getting the status of pod yurt-hub.
-
-### Revert an Yurt edge node to Kubernetes node
-
-The subcommand `yurtctl revert edgenode` can revert a Yurt edge node. The option `--edge-nodes` of command can be used
-to specify one or more nodes to be reverted which is the same as the `yurtctl convert edgenode`.
-
-Assume that the cluster is an OpenYurt cluster and has an Yurt edge node n80:
-```
-$ kubectl describe node n80 | grep Labels
-Labels:             openyurt.io/is-edge-worker=true
-$ kubectl get pod -A | grep yurt-hub
-kube-system   yurt-hub-n80               1/1     Running   0          7m32s
-```
-Using `yurtctl revert edgenode` to revert:
-```
-$ _output/bin/yurtctl revert edgenode --edge-nodes n80
-I0209 11:01:46.837812   12217 edgenode.go:225] label openyurt.io/is-edge-worker is removed
-I0209 11:01:46.838454   12217 edgenode.go:252] found backup file /etc/systemd/system/kubelet.service.d/10-kubeadm.conf.bk, will use it to revert the node
-I0209 11:01:46.838689   12217 edgenode.go:259] systemctl daemon-reload
-I0209 11:01:47.085554   12217 edgenode.go:265] systemctl restart kubelet
-I0209 11:01:47.153388   12217 edgenode.go:270] kubelet has been reset back to default
-I0209 11:01:47.153680   12217 edgenode.go:282] yurt-hub has been removed
-```
-You can verify this by inspecting its labels and getting the status of pod yurt-hub.
 
 ## Troubleshooting
 
@@ -276,7 +261,7 @@ $ _output/bin/yurtctl convert --provider minikube \
   --yurt-controller-manager-image registry.cn-hangzhou.aliyuncs.com/openyurt/yurt-controller-manager:latest \
   --yurt-tunnel-agent-image registry.cn-hangzhou.aliyuncs.com/openyurt/yurt-tunnel-agent:latest \
   --yurt-tunnel-server-image registry.cn-hangzhou.aliyuncs.com/openyurt/yurt-tunnel-server:latest \
-  --yurtctl-servant-image registry.cn-hangzhou.aliyuncs.com/openyurt/yurtctl-servant:latest \
+  --node-servant-image registry.cn-hangzhou.aliyuncs.com/openyurt/node-servant:latest \
   --yurthub-image registry.cn-hangzhou.aliyuncs.com/openyurt/yurthub:latest
 ```
   - or pull all images on the node manually
@@ -288,4 +273,15 @@ In case any adhoc failure makes the Kubelet fail to communicate with APIServer, 
 running the following command in edge node directly:
 ```
 $ sudo sed -i "s|--kubeconfig=.*kubelet.conf|--kubeconfig=/etc/kubernetes/kubelet.conf|g;" /etc/systemd/system/kubelet.service.d/10-kubeadm.conf && sudo systemctl daemon-reload && sudo systemctl restart kubelet.service
+```
+
+### 3. Failure due to incorrect podManifests path
+
+PodManifests path is the dir where k8s static pod YAML file located.
+Tools like kubeadm/minikube/kind all set that path to /etc/kubernetes/manifests. And we choose to follow that setting.
+
+So if you manually change that setting, this will leads to a convert failure.
+To fix it, we recommend creating a soft link:
+```
+ln -s $yourSettingPath /etc/kubernetes/manifests
 ```

@@ -17,6 +17,7 @@ limitations under the License.
 package hubself
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -24,64 +25,68 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/openyurtio/openyurt/cmd/yurthub/app/config"
-	"github.com/openyurtio/openyurt/pkg/projectinfo"
-	hubcert "github.com/openyurtio/openyurt/pkg/yurthub/certificate"
-	"github.com/openyurtio/openyurt/pkg/yurthub/certificate/interfaces"
-	"github.com/openyurtio/openyurt/pkg/yurthub/storage"
-	"github.com/openyurtio/openyurt/pkg/yurthub/storage/disk"
-	"github.com/openyurtio/openyurt/pkg/yurthub/util"
-
-	certificates "k8s.io/api/certificates/v1beta1"
+	certificatesv1 "k8s.io/api/certificates/v1"
+	certificatesv1beta1 "k8s.io/api/certificates/v1beta1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	clientset "k8s.io/client-go/kubernetes"
-	certificatesclient "k8s.io/client-go/kubernetes/typed/certificates/v1beta1"
 	restclient "k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 	certutil "k8s.io/client-go/util/cert"
 	"k8s.io/client-go/util/certificate"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
+
+	"github.com/openyurtio/openyurt/cmd/yurthub/app/config"
+	"github.com/openyurtio/openyurt/pkg/projectinfo"
+	"github.com/openyurtio/openyurt/pkg/util/certmanager/store"
+	hubcert "github.com/openyurtio/openyurt/pkg/yurthub/certificate"
+	"github.com/openyurtio/openyurt/pkg/yurthub/certificate/interfaces"
+	"github.com/openyurtio/openyurt/pkg/yurthub/storage"
+	"github.com/openyurtio/openyurt/pkg/yurthub/storage/disk"
+	"github.com/openyurtio/openyurt/pkg/yurthub/util"
 )
 
 const (
-	CertificateManagerName  = "hubself"
 	HubName                 = "yurthub"
 	HubRootDir              = "/var/lib/"
-	HubPkiDirName           = "pki"
-	HubCaFileName           = "ca.crt"
-	HubConfigFileName       = "%s.conf"
-	BootstrapConfigFileName = "bootstrap-hub.conf"
-	BootstrapUser           = "token-bootstrap-client"
-	DefaultClusterName      = "kubernetes"
-	ClusterInfoName         = "cluster-info"
-	KubeconfigName          = "kubeconfig"
+	hubPkiDirName           = "pki"
+	hubCaFileName           = "ca.crt"
+	hubConfigFileName       = "%s.conf"
+	bootstrapConfigFileName = "bootstrap-hub.conf"
+	bootstrapUser           = "token-bootstrap-client"
+	defaultClusterName      = "kubernetes"
+	clusterInfoName         = "cluster-info"
+	kubeconfigName          = "kubeconfig"
 )
 
 // Register registers a YurtCertificateManager
 func Register(cmr *hubcert.CertificateManagerRegistry) {
-	cmr.Register(CertificateManagerName, func(cfg *config.YurtHubConfiguration) (interfaces.YurtCertificateManager, error) {
+	cmr.Register(util.YurtHubCertificateManagerName, func(cfg *config.YurtHubConfiguration) (interfaces.YurtCertificateManager, error) {
 		return NewYurtHubCertManager(cfg)
 	})
 }
 
 type yurtHubCertManager struct {
-	remoteServers        []*url.URL
-	bootstrapConfStore   storage.Store
-	hubClientCertManager certificate.Manager
-	hubClientCertPath    string
-	joinToken            string
-	caFile               string
-	nodeName             string
-	rootDir              string
-	hubName              string
-	dialer               *util.Dialer
-	stopCh               chan struct{}
+	remoteServers         []*url.URL
+	hubCertOrganizations  []string
+	bootstrapConfStore    storage.Store
+	hubClientCertManager  certificate.Manager
+	hubClientCertPath     string
+	joinToken             string
+	caFile                string
+	nodeName              string
+	rootDir               string
+	hubName               string
+	kubeletRootCAFilePath string
+	kubeletPairFilePath   string
+	dialer                *util.Dialer
+	stopCh                chan struct{}
 }
 
 // NewYurtHubCertManager new a YurtCertificateManager instance
@@ -90,31 +95,72 @@ func NewYurtHubCertManager(cfg *config.YurtHubConfiguration) (interfaces.YurtCer
 		return nil, fmt.Errorf("hub agent configuration is invalid, could not new hub agent cert manager")
 	}
 
-	hubName := projectinfo.GetHubName()
-	if len(hubName) == 0 {
-		hubName = HubName
+	hn := projectinfo.GetHubName()
+	if len(hn) == 0 {
+		hn = HubName
 	}
 
 	rootDir := cfg.RootDir
 	if len(rootDir) == 0 {
-		rootDir = filepath.Join(HubRootDir, hubName)
+		rootDir = filepath.Join(HubRootDir, hn)
 	}
 
 	ycm := &yurtHubCertManager{
-		remoteServers: cfg.RemoteServers,
-		nodeName:      cfg.NodeName,
-		joinToken:     cfg.JoinToken,
-		rootDir:       rootDir,
-		hubName:       hubName,
-		dialer:        util.NewDialer("hub certificate manager"),
-		stopCh:        make(chan struct{}),
+		remoteServers:         cfg.RemoteServers,
+		hubCertOrganizations:  cfg.YurtHubCertOrganizations,
+		nodeName:              cfg.NodeName,
+		joinToken:             cfg.JoinToken,
+		kubeletRootCAFilePath: cfg.KubeletRootCAFilePath,
+		kubeletPairFilePath:   cfg.KubeletPairFilePath,
+		rootDir:               rootDir,
+		hubName:               hn,
+		dialer:                util.NewDialer("hub certificate manager"),
+		stopCh:                make(chan struct{}),
 	}
 
 	return ycm, nil
 }
 
+func removeDirContents(dir string) error {
+	files, err := ioutil.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, d := range files {
+		err = os.RemoveAll(filepath.Join(dir, d.Name()))
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (ycm *yurtHubCertManager) verifyServerAddrOrCleanup() {
+	nServer := ycm.remoteServers[0].String()
+
+	bcf := ycm.getBootstrapConfFile()
+	if existed, _ := util.FileExists(bcf); existed {
+		curKubeConfig, err := util.LoadKubeConfig(bcf)
+		if err == nil && curKubeConfig != nil {
+			oServer := curKubeConfig.Clusters[defaultClusterName].Server
+			if nServer == oServer {
+				klog.Infof("apiServer name %s not changed", oServer)
+				return
+			} else {
+				klog.Infof("config for apiServer %s found, need to recycle for new server %s", oServer, nServer)
+			}
+		}
+	}
+
+	klog.Infof("clean up any stale files")
+	removeDirContents(ycm.rootDir)
+}
+
 // Start init certificate manager and certs for hub agent
 func (ycm *yurtHubCertManager) Start() {
+	// 0. verify, cleanup if needed
+	ycm.verifyServerAddrOrCleanup()
+
 	// 1. create ca file for hub certificate manager
 	err := ycm.initCaCert()
 	if err != nil {
@@ -185,42 +231,14 @@ func (ycm *yurtHubCertManager) Update(cfg *config.YurtHubConfiguration) error {
 	return nil
 }
 
-// GetRestConfig get rest client config from hub agent conf file.
-func (ycm *yurtHubCertManager) GetRestConfig() *restclient.Config {
-	healthyServer := ycm.remoteServers[0]
-	if healthyServer == nil {
-		klog.Infof("all of remote servers are unhealthy, so return nil for rest config")
-		return nil
-	}
-
-	// certificate expired, rest config can not be used to connect remote server,
-	// so return nil for rest config
-	if ycm.Current() == nil {
-		klog.Infof("certificate expired, so return nil for rest config")
-		return nil
-	}
-
-	hubConfFile := ycm.getHubConfFile()
-	if isExist, _ := util.FileExists(hubConfFile); isExist {
-		cfg, err := util.LoadRESTClientConfig(hubConfFile)
-		if err != nil {
-			klog.Errorf("could not get rest config for %s, %v", hubConfFile, err)
-			return nil
-		}
-
-		// re-fix host connecting healthy server
-		cfg.Host = healthyServer.String()
-		klog.Infof("re-fix hub rest config host successfully with server %s", cfg.Host)
-		return cfg
-	}
-
-	klog.Errorf("%s config file(%s) is not exist", ycm.hubName, hubConfFile)
-	return nil
-}
-
 // GetCaFile returns the path of ca file
 func (ycm *yurtHubCertManager) GetCaFile() string {
 	return ycm.caFile
+}
+
+// GetConfFilePath returns the path of yurtHub config file path
+func (ycm *yurtHubCertManager) GetConfFilePath() string {
+	return ycm.getHubConfFile()
 }
 
 // NotExpired returns hub client cert is expired or not.
@@ -234,10 +252,11 @@ func (ycm *yurtHubCertManager) NotExpired() bool {
 func (ycm *yurtHubCertManager) initCaCert() error {
 	caFile := ycm.getCaFile()
 	ycm.caFile = caFile
+	caExisted := false
 
 	if exists, err := util.FileExists(caFile); exists {
-		klog.Infof("%s file already exists, so skip to create ca file", caFile)
-		return nil
+		caExisted = true
+		klog.Infof("%s file already exists, check with server", caFile)
 	} else if err != nil {
 		klog.Errorf("could not stat ca file %s, %v", caFile, err)
 		return err
@@ -258,13 +277,17 @@ func (ycm *yurtHubCertManager) initCaCert() error {
 	}
 
 	// make sure configMap kube-public/cluster-info in k8s cluster beforehand
-	insecureClusterInfo, err := insecureClient.CoreV1().ConfigMaps(metav1.NamespacePublic).Get(context.Background(), ClusterInfoName, metav1.GetOptions{})
+	insecureClusterInfo, err := insecureClient.CoreV1().ConfigMaps(metav1.NamespacePublic).Get(context.Background(), clusterInfoName, metav1.GetOptions{})
 	if err != nil {
+		if caExisted {
+			klog.Errorf("couldn't reach server, use existed %s file", caFile)
+			return nil
+		}
 		klog.Errorf("failed to get cluster-info configmap, %v", err)
 		return err
 	}
 
-	kubeconfigStr, ok := insecureClusterInfo.Data[KubeconfigName]
+	kubeconfigStr, ok := insecureClusterInfo.Data[kubeconfigName]
 	if !ok || len(kubeconfigStr) == 0 {
 		return fmt.Errorf("no kubeconfig in cluster-info configmap of kube-public namespace")
 	}
@@ -281,6 +304,21 @@ func (ycm *yurtHubCertManager) initCaCert() error {
 	var clusterCABytes []byte
 	for _, cluster := range kubeConfig.Clusters {
 		clusterCABytes = cluster.CertificateAuthorityData
+	}
+
+	if caExisted {
+		var curCABytes []byte
+		if curCABytes, err = ioutil.ReadFile(caFile); err != nil {
+			klog.Infof("could not read existed %s file, %v, ", caFile, err)
+		}
+
+		if bytes.Equal(clusterCABytes, curCABytes) {
+			klog.Infof("%s file matched with server's, reuse it", caFile)
+			return nil
+		} else {
+			klog.Infof("%s file is outdated, need to create a new one", caFile)
+			removeDirContents(ycm.rootDir)
+		}
 	}
 
 	if err := certutil.WriteCert(caFile, clusterCABytes); err != nil {
@@ -300,7 +338,7 @@ func (ycm *yurtHubCertManager) initBootstrap() error {
 	}
 	ycm.bootstrapConfStore = bootstrapConfStore
 
-	contents, err := ycm.bootstrapConfStore.Get(BootstrapConfigFileName)
+	contents, err := ycm.bootstrapConfStore.Get(bootstrapConfigFileName)
 	if err == storage.ErrStorageNotFound {
 		klog.Infof("%s bootstrap conf file does not exist, so create it", ycm.hubName)
 		return ycm.createBootstrapConfFile(ycm.joinToken)
@@ -318,7 +356,7 @@ func (ycm *yurtHubCertManager) initBootstrap() error {
 
 // initClientCertificateManager init hub client certificate manager
 func (ycm *yurtHubCertManager) initClientCertificateManager() error {
-	s, err := certificate.NewFileStore(ycm.hubName, ycm.getPkiDir(), ycm.getPkiDir(), "", "")
+	s, err := store.NewFileStoreWrapper(ycm.hubName, ycm.getPkiDir(), ycm.getPkiDir(), "", "")
 	if err != nil {
 		klog.Errorf("failed to init %s client cert store, %v", ycm.hubName, err)
 		return err
@@ -326,19 +364,28 @@ func (ycm *yurtHubCertManager) initClientCertificateManager() error {
 	}
 	ycm.hubClientCertPath = s.CurrentPath()
 
+	orgs := []string{"openyurt:yurthub", "system:nodes"}
+	if len(ycm.hubCertOrganizations) > 0 {
+		for _, v := range ycm.hubCertOrganizations {
+			if v != "openyurt:yurthub" && v != "system:nodes" {
+				orgs = append(orgs, v)
+			}
+		}
+	}
+
 	m, err := certificate.NewManager(&certificate.Config{
-		ClientFn:   ycm.generateCertClientFn,
-		SignerName: certificates.KubeAPIServerClientKubeletSignerName,
+		ClientsetFn: ycm.generateCertClientFn,
+		SignerName:  certificatesv1beta1.LegacyUnknownSignerName,
 		Template: &x509.CertificateRequest{
 			Subject: pkix.Name{
 				CommonName:   fmt.Sprintf("system:node:%s", ycm.nodeName),
-				Organization: []string{"system:nodes"},
+				Organization: orgs,
 			},
 		},
-		Usages: []certificates.KeyUsage{
-			certificates.UsageDigitalSignature,
-			certificates.UsageKeyEncipherment,
-			certificates.UsageClientAuth,
+		Usages: []certificatesv1.KeyUsage{
+			certificatesv1.UsageDigitalSignature,
+			certificatesv1.UsageKeyEncipherment,
+			certificatesv1.UsageClientAuth,
 		},
 
 		CertificateStore: s,
@@ -370,10 +417,10 @@ func (ycm *yurtHubCertManager) getBootstrapClientConfig(healthyServer *url.URL) 
 
 	klog.Infof("no join token, so use kubelet config to bootstrap hub")
 	// use kubelet.conf to bootstrap hub agent
-	return util.LoadKubeletRestClientConfig(healthyServer)
+	return util.LoadKubeletRestClientConfig(healthyServer, ycm.kubeletRootCAFilePath, ycm.kubeletPairFilePath)
 }
 
-func (ycm *yurtHubCertManager) generateCertClientFn(current *tls.Certificate) (certificatesclient.CertificateSigningRequestInterface, error) {
+func (ycm *yurtHubCertManager) generateCertClientFn(current *tls.Certificate) (clientset.Interface, error) {
 	var cfg *restclient.Config
 	var healthyServer *url.URL
 	hubConfFile := ycm.getHubConfFile()
@@ -423,11 +470,7 @@ func (ycm *yurtHubCertManager) generateCertClientFn(current *tls.Certificate) (c
 	klog.V(2).Infof("avoid tcp conn leak, close old tcp conn that used to rotate certificate")
 	ycm.dialer.Close(strings.Trim(cfg.Host, "https://"))
 
-	client, err := clientset.NewForConfig(cfg)
-	if err != nil {
-		return nil, err
-	}
-	return client.CertificatesV1beta1().CertificateSigningRequests(), nil
+	return clientset.NewForConfig(cfg)
 }
 
 // initHubConf init hub agent conf file.
@@ -462,39 +505,39 @@ func (ycm *yurtHubCertManager) initHubConf() error {
 
 // getPkiDir returns the directory for storing hub agent pki
 func (ycm *yurtHubCertManager) getPkiDir() string {
-	return filepath.Join(ycm.rootDir, HubPkiDirName)
+	return filepath.Join(ycm.rootDir, hubPkiDirName)
 }
 
 // getCaFile returns the path of ca file
 func (ycm *yurtHubCertManager) getCaFile() string {
-	return filepath.Join(ycm.getPkiDir(), HubCaFileName)
+	return filepath.Join(ycm.getPkiDir(), hubCaFileName)
 }
 
 // getBootstrapConfFile returns the path of bootstrap conf file
 func (ycm *yurtHubCertManager) getBootstrapConfFile() string {
-	return filepath.Join(ycm.rootDir, BootstrapConfigFileName)
+	return filepath.Join(ycm.rootDir, bootstrapConfigFileName)
 }
 
 // getHubConfFile returns the path of hub agent conf file.
 func (ycm *yurtHubCertManager) getHubConfFile() string {
-	return filepath.Join(ycm.rootDir, fmt.Sprintf(HubConfigFileName, ycm.hubName))
+	return filepath.Join(ycm.rootDir, fmt.Sprintf(hubConfigFileName, ycm.hubName))
 }
 
 // createBasic create basic client cmd config
 func createBasic(apiServerAddr string, caCert []byte) *clientcmdapi.Config {
-	contextName := fmt.Sprintf("%s@%s", BootstrapUser, DefaultClusterName)
+	contextName := fmt.Sprintf("%s@%s", bootstrapUser, defaultClusterName)
 
 	return &clientcmdapi.Config{
 		Clusters: map[string]*clientcmdapi.Cluster{
-			DefaultClusterName: {
+			defaultClusterName: {
 				Server:                   apiServerAddr,
 				CertificateAuthorityData: caCert,
 			},
 		},
 		Contexts: map[string]*clientcmdapi.Context{
 			contextName: {
-				Cluster:  DefaultClusterName,
-				AuthInfo: BootstrapUser,
+				Cluster:  defaultClusterName,
+				AuthInfo: bootstrapUser,
 			},
 		},
 		AuthInfos:      map[string]*clientcmdapi.AuthInfo{},
@@ -508,7 +551,7 @@ func createInsecureRestClientConfig(remoteServer *url.URL) (*restclient.Config, 
 		return nil, fmt.Errorf("no healthy remote server")
 	}
 	cfg := createBasic(remoteServer.String(), []byte{})
-	cfg.Clusters[DefaultClusterName].InsecureSkipTLSVerify = true
+	cfg.Clusters[defaultClusterName].InsecureSkipTLSVerify = true
 
 	restConfig, err := clientcmd.NewDefaultClientConfig(*cfg, &clientcmd.ConfigOverrides{}).ClientConfig()
 	if err != nil {
@@ -536,7 +579,7 @@ func createBootstrapConf(apiServerAddr, caFile, joinToken string) *clientcmdapi.
 	}
 
 	cfg := createBasic(apiServerAddr, caCert)
-	cfg.AuthInfos[BootstrapUser] = &clientcmdapi.AuthInfo{Token: joinToken}
+	cfg.AuthInfos[bootstrapUser] = &clientcmdapi.AuthInfo{Token: joinToken}
 
 	return cfg
 }
@@ -559,7 +602,7 @@ func (ycm *yurtHubCertManager) createBootstrapConfFile(joinToken string) error {
 		return err
 	}
 
-	err = ycm.bootstrapConfStore.Update(BootstrapConfigFileName, content)
+	err = ycm.bootstrapConfStore.Update(bootstrapConfigFileName, content)
 	if err != nil {
 		klog.Errorf("could not create bootstrap conf file(%s), %v", ycm.getBootstrapConfFile(), err)
 		return err
@@ -586,21 +629,21 @@ func (ycm *yurtHubCertManager) updateBootstrapConfFile(joinToken string) error {
 		return fmt.Errorf("could not load bootstrap conf file(%s), %v", ycm.getBootstrapConfFile(), err)
 	}
 
-	if curKubeConfig.AuthInfos[BootstrapUser] != nil {
-		if curKubeConfig.AuthInfos[BootstrapUser].Token == joinToken {
+	if curKubeConfig.AuthInfos[bootstrapUser] != nil {
+		if curKubeConfig.AuthInfos[bootstrapUser].Token == joinToken {
 			klog.Infof("join token for %s bootstrap conf file is not changed", ycm.hubName)
 			return nil
 		}
 	}
 
-	curKubeConfig.AuthInfos[BootstrapUser] = &clientcmdapi.AuthInfo{Token: joinToken}
+	curKubeConfig.AuthInfos[bootstrapUser] = &clientcmdapi.AuthInfo{Token: joinToken}
 	content, err := clientcmd.Write(*curKubeConfig)
 	if err != nil {
 		klog.Errorf("could not update bootstrap config into bytes, %v", err)
 		return err
 	}
 
-	err = ycm.bootstrapConfStore.Update(BootstrapConfigFileName, content)
+	err = ycm.bootstrapConfStore.Update(bootstrapConfigFileName, content)
 	if err != nil {
 		klog.Errorf("could not update bootstrap config, %v", err)
 		return err

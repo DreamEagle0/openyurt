@@ -21,18 +21,18 @@ import (
 	"sync"
 	"time"
 
+	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/klog/v2"
+
 	"github.com/openyurtio/openyurt/cmd/yurthub/app/config"
 	"github.com/openyurtio/openyurt/pkg/yurthub/certificate/interfaces"
-
-	"k8s.io/apimachinery/pkg/util/wait"
-	"k8s.io/klog"
 )
 
 // Factory is a function that returns an YurtCertificateManager.
 // The cfg parameter provides the common info for certificate manager
 type Factory func(cfg *config.YurtHubConfiguration) (interfaces.YurtCertificateManager, error)
 
-// CertificateManagerRegistry is a object for holding all of certificate managers
+// CertificateManagerRegistry is a object for holding all certificate managers
 type CertificateManagerRegistry struct {
 	sync.Mutex
 	registry map[string]Factory

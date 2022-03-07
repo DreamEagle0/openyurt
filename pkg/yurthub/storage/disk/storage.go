@@ -25,12 +25,13 @@ import (
 	"strings"
 	"sync"
 
+	"k8s.io/klog/v2"
+
 	"github.com/openyurtio/openyurt/pkg/yurthub/storage"
-	"k8s.io/klog"
 )
 
 const (
-	cacheBaseDir = "/etc/kubernetes/cache/"
+	CacheBaseDir = "/etc/kubernetes/cache/"
 	tmpPrefix    = "tmp_"
 )
 
@@ -43,7 +44,8 @@ type diskStorage struct {
 // NewDiskStorage creates a storage.Store for caching data into local disk
 func NewDiskStorage(dir string) (storage.Store, error) {
 	if dir == "" {
-		dir = cacheBaseDir
+		klog.Infof("disk cache path is empty, set it by default %s", CacheBaseDir)
+		dir = CacheBaseDir
 	}
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
 		if err = os.MkdirAll(dir, 0755); err != nil {
@@ -344,11 +346,10 @@ func (ds *diskStorage) Update(key string, contents []byte) error {
 }
 
 // Replace will delete all files under rootKey dir and create new files with contents.
+// Note: when the contents are empty and the dir already exists, the create function will clean the current dir
 func (ds *diskStorage) Replace(rootKey string, contents map[string][]byte) error {
 	if rootKey == "" {
 		return storage.ErrKeyIsEmpty
-	} else if len(contents) == 0 {
-		return storage.ErrKeyHasNoContent
 	}
 
 	for key := range contents {
@@ -379,11 +380,13 @@ func (ds *diskStorage) Replace(rootKey string, contents map[string][]byte) error
 
 	// 2. create new file with contents
 	// TODO: if error happens, we may need retry mechanism, or add some mechanism to do consistency check.
-	for key, data := range contents {
-		err := ds.create(key, data)
-		if err != nil {
-			klog.Errorf("failed to create %s in replace, %v", key, err)
-			continue
+	if len(contents) != 0 {
+		for key, data := range contents {
+			err := ds.create(key, data)
+			if err != nil {
+				klog.Errorf("failed to create %s in replace, %v", key, err)
+				continue
+			}
 		}
 	}
 
@@ -459,16 +462,19 @@ func (ds *diskStorage) lockKey(key string) bool {
 	ds.Lock()
 	defer ds.Unlock()
 	if _, ok := ds.keyPendingStatus[key]; ok {
+		klog.Infof("key(%s) storage is pending, just skip it", key)
 		return false
 	}
 
 	for pendingKey := range ds.keyPendingStatus {
 		if len(key) > len(pendingKey) {
-			if strings.Contains(key, pendingKey) {
+			if strings.Contains(key, fmt.Sprintf("%s/", pendingKey)) {
+				klog.Infof("key(%s) storage is pending, skip to store key(%s)", pendingKey, key)
 				return false
 			}
 		} else {
-			if strings.Contains(pendingKey, key) {
+			if strings.Contains(pendingKey, fmt.Sprintf("%s/", key)) {
+				klog.Infof("key(%s) storage is pending, skip to store key(%s)", pendingKey, key)
 				return false
 			}
 		}

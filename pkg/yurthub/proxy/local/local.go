@@ -24,17 +24,18 @@ import (
 	"strconv"
 	"time"
 
-	manager "github.com/openyurtio/openyurt/pkg/yurthub/cachemanager"
-	"github.com/openyurtio/openyurt/pkg/yurthub/storage"
-	"github.com/openyurtio/openyurt/pkg/yurthub/util"
-
 	"k8s.io/apimachinery/pkg/api/errors"
 	metainternalversion "k8s.io/apimachinery/pkg/apis/meta/internalversion"
 	metainternalversionscheme "k8s.io/apimachinery/pkg/apis/meta/internalversion/scheme"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	apirequest "k8s.io/apiserver/pkg/endpoints/request"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
+
+	manager "github.com/openyurtio/openyurt/pkg/yurthub/cachemanager"
+	hubmeta "github.com/openyurtio/openyurt/pkg/yurthub/kubernetes/meta"
+	"github.com/openyurtio/openyurt/pkg/yurthub/storage"
+	"github.com/openyurtio/openyurt/pkg/yurthub/util"
 )
 
 const (
@@ -90,8 +91,8 @@ func localDelete(w http.ResponseWriter, req *http.Request) error {
 	ctx := req.Context()
 	info, _ := apirequest.RequestInfoFrom(ctx)
 	s := &metav1.Status{
-		Status: metav1.StatusSuccess,
-		Code:   http.StatusOK,
+		Status: metav1.StatusFailure,
+		Code:   http.StatusForbidden,
 		Reason: metav1.StatusReasonForbidden,
 		Details: &metav1.StatusDetails{
 			Name:  info.Name,
@@ -101,7 +102,7 @@ func localDelete(w http.ResponseWriter, req *http.Request) error {
 		Message: "delete request is not supported in local cache",
 	}
 
-	util.WriteObject(http.StatusOK, s, w, req)
+	util.WriteObject(http.StatusForbidden, s, w, req)
 	return nil
 }
 
@@ -116,7 +117,7 @@ func (lp *LocalProxy) localPost(w http.ResponseWriter, req *http.Request) error 
 		ctx = util.WithRespContentType(ctx, reqContentType)
 		req = req.WithContext(ctx)
 		stopCh := make(chan struct{})
-		rc, prc := util.NewDualReadCloser(req.Body, false)
+		rc, prc := util.NewDualReadCloser(req, req.Body, false)
 		go func(req *http.Request, prc io.ReadCloser, stopCh <-chan struct{}) {
 			klog.V(2).Infof("cache events when cluster is unhealthy, %v", lp.cacheMgr.CacheResponse(req, prc, stopCh))
 		}(req, prc, stopCh)
@@ -204,7 +205,7 @@ func (lp *LocalProxy) localReqCache(w http.ResponseWriter, req *http.Request) er
 	}
 
 	obj, err := lp.cacheMgr.QueryCache(req)
-	if err == storage.ErrStorageNotFound {
+	if err == storage.ErrStorageNotFound || err == hubmeta.ErrGVRNotRecognized {
 		klog.Errorf("object not found for %s", util.ReqString(req))
 		reqInfo, _ := apirequest.RequestInfoFrom(req.Context())
 		return errors.NewNotFound(schema.GroupResource{Group: reqInfo.APIGroup, Resource: reqInfo.Resource}, reqInfo.Name)

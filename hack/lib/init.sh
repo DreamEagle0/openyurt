@@ -1,3 +1,5 @@
+#!/usr/bin/env bash
+
 # Copyright 2020 The OpenYurt Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,8 +14,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-#!/usr/bin/env bash
-
 set -o errexit
 set -o nounset
 set -o pipefail
@@ -26,7 +26,7 @@ YURT_LOCAL_BIN_DIR=${YURT_OUTPUT_DIR}/local/bin
 
 PROJECT_PREFIX=${PROJECT_PREFIX:-yurt}
 LABEL_PREFIX=${LABEL_PREFIX:-openyurt.io}
-GIT_VERSION=${GIT_VERSION:-v0.4.0}
+GIT_VERSION=${GIT_VERSION:-$(git describe --abbrev=0)}
 GIT_COMMIT=$(git rev-parse HEAD)
 BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
 REPO=${REPO:-openyurt}
@@ -35,3 +35,4 @@ TAG=$GIT_VERSION
 source "${YURT_ROOT}/hack/lib/common.sh"
 source "${YURT_ROOT}/hack/lib/build.sh"
 source "${YURT_ROOT}/hack/lib/release-images.sh"
+source "${YURT_ROOT}/hack/lib/release-manifest.sh"

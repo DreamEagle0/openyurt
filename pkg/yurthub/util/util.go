@@ -26,7 +26,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/openyurtio/openyurt/pkg/yurthub/kubernetes/serializer"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apiserver/pkg/endpoints/handlers/negotiation"
@@ -36,13 +35,33 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 	certutil "k8s.io/client-go/util/cert"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
+
+	"github.com/openyurtio/openyurt/pkg/projectinfo"
+	"github.com/openyurtio/openyurt/pkg/yurthub/kubernetes/serializer"
+	"github.com/openyurtio/openyurt/pkg/yurthub/metrics"
 )
 
 // ProxyKeyType represents the key in proxy request context
 type ProxyKeyType int
 
+// WorkingMode represents the working mode of yurthub.
+type WorkingMode string
+
 const (
+	// WorkingModeCloud represents yurthub is working in cloud mode, which means yurthub is deployed on the cloud side.
+	WorkingModeCloud WorkingMode = "cloud"
+	// WorkingModeEdge represents yurthub is working in edge mode, which means yurthub is deployed on the edge side.
+	WorkingModeEdge WorkingMode = "edge"
+)
+
+const (
+	// YurtHubCertificateManagerName represents the certificateManager name in yurthub mode
+	YurtHubCertificateManagerName = "hubself"
+	// DefaultKubeletPairFilePath represents the default kubelet pair file path
+	DefaultKubeletPairFilePath = "/var/lib/kubelet/pki/kubelet-client-current.pem"
+	// DefaultKubeletRootCAFilePath represents the default kubelet ca file path
+	DefaultKubeletRootCAFilePath = "/etc/kubernetes/pki/ca.crt"
 	// ProxyReqContentType represents request content type context key
 	ProxyReqContentType ProxyKeyType = iota
 	// ProxyRespContentType represents response content type context key
@@ -53,6 +72,17 @@ const (
 	ProxyReqCanCache
 	// ProxyListSelector represents label selector and filed selector string for list request
 	ProxyListSelector
+	YurtHubNamespace   = "kube-system"
+	CacheUserAgentsKey = "cache_agents"
+
+	YurtHubProxyPort       = "10261"
+	YurtHubPort            = "10267"
+	YurtHubProxySecurePort = "10268"
+)
+
+var (
+	DefaultCacheAgents   = []string{"kubelet", "kube-proxy", "flanneld", "coredns", projectinfo.GetAgentName(), projectinfo.GetHubName()}
+	YurthubConfigMapName = fmt.Sprintf("%s-hub-cfg", strings.TrimRightFunc(projectinfo.GetProjectPrefix(), func(c rune) bool { return c == '-' }))
 )
 
 // WithValue returns a copy of parent in which the value associated with key is val.
@@ -180,9 +210,10 @@ func Err(err error, w http.ResponseWriter, req *http.Request) {
 }
 
 // NewDualReadCloser create an dualReadCloser object
-func NewDualReadCloser(rc io.ReadCloser, isRespBody bool) (io.ReadCloser, io.ReadCloser) {
+func NewDualReadCloser(req *http.Request, rc io.ReadCloser, isRespBody bool) (io.ReadCloser, io.ReadCloser) {
 	pr, pw := io.Pipe()
 	dr := &dualReadCloser{
+		req:        req,
 		rc:         rc,
 		pw:         pw,
 		isRespBody: isRespBody,
@@ -192,8 +223,9 @@ func NewDualReadCloser(rc io.ReadCloser, isRespBody bool) (io.ReadCloser, io.Rea
 }
 
 type dualReadCloser struct {
-	rc io.ReadCloser
-	pw *io.PipeWriter
+	req *http.Request
+	rc  io.ReadCloser
+	pw  *io.PipeWriter
 	// isRespBody shows rc(is.ReadCloser) is a response.Body
 	// or not(maybe a request.Body). if it is true(it's a response.Body),
 	// we should close the response body in Close func, else not,
@@ -203,6 +235,17 @@ type dualReadCloser struct {
 
 // Read read data into p and write into pipe
 func (dr *dualReadCloser) Read(p []byte) (n int, err error) {
+	defer func() {
+		if dr.req != nil && dr.isRespBody {
+			ctx := dr.req.Context()
+			info, _ := apirequest.RequestInfoFrom(ctx)
+			if info.IsResourceRequest {
+				comp, _ := ClientComponentFrom(ctx)
+				metrics.Metrics.AddProxyTrafficCollector(comp, info.Verb, info.Resource, info.Subresource, n)
+			}
+		}
+	}()
+
 	n, err = dr.rc.Read(p)
 	if n > 0 {
 		if n, err := dr.pw.Write(p[:n]); err != nil {
@@ -283,7 +326,17 @@ func IsSupportedLBMode(lbMode string) bool {
 // IsSupportedCertMode check cert mode is supported or not
 func IsSupportedCertMode(certMode string) bool {
 	switch certMode {
-	case "kubelet", "hubself":
+	case YurtHubCertificateManagerName:
+		return true
+	}
+
+	return false
+}
+
+// IsSupportedWorkingMode check working mode is supported or not
+func IsSupportedWorkingMode(workingMode WorkingMode) bool {
+	switch workingMode {
+	case WorkingModeCloud, WorkingModeEdge:
 		return true
 	}
 
@@ -301,24 +354,19 @@ func FileExists(filename string) (bool, error) {
 }
 
 // LoadKubeletRestClientConfig load *rest.Config for accessing healthyServer
-func LoadKubeletRestClientConfig(healthyServer *url.URL) (*rest.Config, error) {
-	const (
-		pairFile   = "/var/lib/kubelet/pki/kubelet-client-current.pem"
-		rootCAFile = "/etc/kubernetes/pki/ca.crt"
-	)
-
+func LoadKubeletRestClientConfig(healthyServer *url.URL, kubeletRootCAFilePath, kubeletPairFilePath string) (*rest.Config, error) {
 	tlsClientConfig := rest.TLSClientConfig{}
-	if _, err := certutil.NewPool(rootCAFile); err != nil {
-		klog.Errorf("Expected to load root CA config from %s, but got err: %v", rootCAFile, err)
+	if _, err := certutil.NewPool(kubeletRootCAFilePath); err != nil {
+		klog.Errorf("Expected to load root CA config from %s, but got err: %v", kubeletRootCAFilePath, err)
 	} else {
-		tlsClientConfig.CAFile = rootCAFile
+		tlsClientConfig.CAFile = kubeletRootCAFilePath
 	}
 
-	if can, _ := certutil.CanReadCertAndKey(pairFile, pairFile); !can {
-		return nil, fmt.Errorf("error reading %s, certificate and key must be supplied as a pair", pairFile)
+	if can, _ := certutil.CanReadCertAndKey(kubeletPairFilePath, kubeletPairFilePath); !can {
+		return nil, fmt.Errorf("error reading %s, certificate and key must be supplied as a pair", kubeletPairFilePath)
 	}
-	tlsClientConfig.KeyFile = pairFile
-	tlsClientConfig.CertFile = pairFile
+	tlsClientConfig.KeyFile = kubeletPairFilePath
+	tlsClientConfig.CertFile = kubeletPairFilePath
 
 	return &rest.Config{
 		Host:            healthyServer.String(),

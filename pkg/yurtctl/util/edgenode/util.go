@@ -29,7 +29,13 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/util/homedir"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
+)
+
+const (
+	NODE_NAME     = "NODE_NAME"
+	KUBECONFIG    = "KUBECONFIG"
+	NodeNameSplit = "="
 )
 
 // FileExists determines whether the file exists
@@ -70,25 +76,23 @@ func GetSingleContentFromFile(filename string, regularExpression string) (string
 	return contents[0], nil
 }
 
-// DirExists determines whether the directory exists
-func DirExists(dirname string) (bool, error) {
+// EnsureDir make sure dir is exists, if not create
+func EnsureDir(dirname string) error {
 	s, err := os.Stat(dirname)
-	if err != nil {
-		return false, err
+	if err == nil && s.IsDir() {
+		return nil
 	}
-	if !s.IsDir() {
-		return false, fmt.Errorf("%s is not a dir", dirname)
-	}
-	return true, nil
+
+	return os.MkdirAll(dirname, 0755)
 }
 
 // CopyFile copys sourceFile to destinationFile
-func CopyFile(sourceFile string, destinationFile string) error {
+func CopyFile(sourceFile string, destinationFile string, perm os.FileMode) error {
 	content, err := ioutil.ReadFile(sourceFile)
 	if err != nil {
 		return fmt.Errorf("failed to read source file %s: %v", sourceFile, err)
 	}
-	err = ioutil.WriteFile(destinationFile, content, 0666)
+	err = ioutil.WriteFile(destinationFile, content, perm)
 	if err != nil {
 		return fmt.Errorf("failed to write destination file %s: %v", destinationFile, err)
 	}
@@ -108,7 +112,7 @@ func ReplaceRegularExpression(content string, replace map[string]string) string 
 // in the configuration file or hostname
 func GetNodeName(kubeadmConfPath string) (string, error) {
 	//1. from env NODE_NAME
-	nodename := os.Getenv("NODE_NAME")
+	nodename := os.Getenv(NODE_NAME)
 	if nodename != "" {
 		return nodename, nil
 	}
@@ -116,7 +120,7 @@ func GetNodeName(kubeadmConfPath string) (string, error) {
 	//2. find --hostname-override in 10-kubeadm.conf
 	nodeName, err := GetSingleContentFromFile(kubeadmConfPath, KubeletHostname)
 	if nodeName != "" {
-		nodeName = strings.Split(nodeName, "=")[1]
+		nodeName = strings.Split(nodeName, NodeNameSplit)[1]
 		return nodeName, nil
 	} else {
 		klog.V(4).Info("get nodename err: ", err)
@@ -131,7 +135,7 @@ func GetNodeName(kubeadmConfPath string) (string, error) {
 		ef = strings.Split(ef, "-")[1]
 		nodeName, err = GetSingleContentFromFile(ef, KubeletHostname)
 		if nodeName != "" {
-			nodeName = strings.Split(nodeName, "=")[1]
+			nodeName = strings.Split(nodeName, NodeNameSplit)[1]
 			return nodeName, nil
 		} else {
 			klog.V(4).Info("get nodename err: ", err)
@@ -171,7 +175,7 @@ func PrepareKubeConfigPath(flags *pflag.FlagSet) (string, error) {
 	}
 
 	if kbCfgPath == "" {
-		kbCfgPath = os.Getenv("KUBECONFIG")
+		kbCfgPath = os.Getenv(KUBECONFIG)
 	}
 
 	if kbCfgPath == "" {
@@ -199,4 +203,9 @@ func Exec(cmd *exec.Cmd) error {
 		return err
 	}
 	return nil
+}
+
+// GetPodManifestPath return podManifestPath, use default value of kubeadm/minikube/kind. etc.
+func GetPodManifestPath() string {
+	return StaticPodPath // /etc/kubernetes/manifests
 }

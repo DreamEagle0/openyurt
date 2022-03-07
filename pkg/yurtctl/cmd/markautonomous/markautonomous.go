@@ -26,7 +26,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 
 	"github.com/openyurtio/openyurt/pkg/projectinfo"
 	"github.com/openyurtio/openyurt/pkg/yurtctl/constants"
@@ -60,10 +60,11 @@ func NewMarkAutonomousCmd() *cobra.Command {
 				klog.Fatalf("fail to make nodes autonomous: %s", err)
 			}
 		},
+		Args: cobra.NoArgs,
 	}
 
 	cmd.Flags().StringP("autonomous-nodes", "a", "",
-		"The list of nodes that will be marked as autonomous."+
+		"The list of nodes that will be marked as autonomous. If not set, all edge nodes will be marked as autonomous."+
 			"(e.g. -a autonomousnode1,autonomousnode2)")
 
 	return cmd

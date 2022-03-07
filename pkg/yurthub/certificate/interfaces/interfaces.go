@@ -17,17 +17,16 @@ limitations under the License.
 package interfaces
 
 import (
-	"github.com/openyurtio/openyurt/cmd/yurthub/app/config"
-
-	"k8s.io/client-go/rest"
 	"k8s.io/client-go/util/certificate"
+
+	"github.com/openyurtio/openyurt/cmd/yurthub/app/config"
 )
 
 // YurtCertificateManager is responsible for managing node certificate for yurthub
 type YurtCertificateManager interface {
 	certificate.Manager
 	Update(cfg *config.YurtHubConfiguration) error
-	GetRestConfig() *rest.Config
+	GetConfFilePath() string
 	GetCaFile() string
 	NotExpired() bool
 }

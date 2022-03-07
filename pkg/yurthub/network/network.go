@@ -21,9 +21,9 @@ import (
 	"net"
 	"time"
 
-	"github.com/openyurtio/openyurt/cmd/yurthub/app/config"
+	"k8s.io/klog/v2"
 
-	"k8s.io/klog"
+	"github.com/openyurtio/openyurt/cmd/yurthub/app/config"
 )
 
 const (
@@ -54,6 +54,12 @@ func NewNetworkManager(cfg *config.YurtHubConfiguration) (*NetworkManager, error
 		dummyIfName:     cfg.HubAgentDummyIfName,
 		enableIptables:  cfg.EnableIptables,
 	}
+	// secure port
+	_, securePort, err := net.SplitHostPort(cfg.YurtHubProxyServerSecureDummyAddr)
+	if err != nil {
+		return nil, err
+	}
+	m.iptablesManager.rules = append(m.iptablesManager.rules, makeupIptablesRules(ip, securePort)...)
 	if err = m.configureNetwork(); err != nil {
 		return nil, err
 	}
@@ -70,6 +76,11 @@ func (m *NetworkManager) Run(stopCh <-chan struct{}) {
 			select {
 			case <-stopCh:
 				klog.Infof("exit network manager run goroutine normally")
+				m.iptablesManager.CleanUpIptablesRules()
+				err := m.ifController.DeleteDummyInterface(m.dummyIfName)
+				if err != nil {
+					klog.Errorf("failed to delete dummy interface %s, %v", m.dummyIfName, err)
+				}
 				return
 			case <-ticker.C:
 				if err := m.configureNetwork(); err != nil {

@@ -17,13 +17,17 @@ limitations under the License.
 package edgenode
 
 const (
-	KubeletSvcPath   = "/etc/systemd/system/kubelet.service.d/10-kubeadm.conf"
-	OpenyurtDir      = "/var/lib/openyurt"
-	StaticPodPath    = "/etc/kubernetes/manifests"
-	KubeCondfigPath  = "/etc/kubernetes/kubelet.conf"
-	YurthubYamlName  = "yurt-hub.yaml"
-	KubeletConfName  = "kubelet.conf"
-	KubeletSvcBackup = "%s.bk"
+	KubeletSvcPath       = "/usr/lib/systemd/system/kubelet.service.d/10-kubeadm.conf"
+	OpenyurtDir          = "/var/lib/openyurt"
+	StaticPodPath        = "/etc/kubernetes/manifests"
+	KubeCondfigPath      = "/etc/kubernetes/kubelet.conf"
+	KubeCaFile           = "/etc/kubernetes/pki/ca.crt"
+	YurthubYamlName      = "yurt-hub.yaml"
+	YurthubComponentName = "yurt-hub"
+	YurthubNamespace     = "kube-system"
+	YurthubCmName        = "yurt-hub-cfg"
+	KubeletConfName      = "kubelet.conf"
+	KubeletSvcBackup     = "%s.bk"
 
 	Hostname               = "/etc/hostname"
 	KubeletHostname        = "--hostname-override=[^\"\\s]*"
@@ -68,21 +72,31 @@ spec:
     hostPath:
       path: /etc/kubernetes
       type: Directory
+  - name: pem-dir
+    hostPath:
+      path: /var/lib/kubelet/pki
+      type: Directory
   containers:
   - name: yurt-hub
-    image: __yurthub_image__
+    image: {{.image}}
     imagePullPolicy: IfNotPresent
     volumeMounts:
     - name: hub-dir
       mountPath: /var/lib/yurthub
     - name: kubernetes
       mountPath: /etc/kubernetes
+    - name: pem-dir
+      mountPath: /var/lib/kubelet/pki
     command:
     - yurthub
     - --v=2
-    - --server-addr=__kubernetes_service_addr__
+    - --server-addr={{.kubernetesServerAddr}}
     - --node-name=$(NODE_NAME)
-    - --join-token=__join_token__
+    - --join-token={{.joinToken}}
+    - --working-mode={{.workingMode}}
+      {{if .organizations }}
+    - --hub-cert-organizations={{.organizations}}
+      {{end}}
     livenessProbe:
       httpGet:
         host: 127.0.0.1
@@ -109,4 +123,55 @@ spec:
   priorityClassName: system-node-critical
   priority: 2000001000
 `
+	YurthubClusterRole = `
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: yurt-hub
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - events
+    verbs:
+      - get
+  - apiGroups:
+      - apps.openyurt.io
+    resources:
+      - nodepools
+    verbs:
+      - list
+      - watch
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+    resourceNames:
+      - yurt-hub-cfg
+    verbs:
+      - list
+      - watch
+`
+	YurthubClusterRoleBinding = `
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: yurt-hub
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: yurt-hub
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: Group
+    name: system:nodes
+`
+	YurthubConfigMap = `
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: yurt-hub-cfg
+  namespace: kube-system
+data:
+  cache_agents: ""`
 )
